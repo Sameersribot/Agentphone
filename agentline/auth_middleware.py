@@ -5,7 +5,7 @@ Bearer token authentication using bcrypt-hashed API keys.
 
 from fastapi import Depends, HTTPException, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from passlib.hash import bcrypt
+import bcrypt
 
 from agentline.database import get_db
 
@@ -44,7 +44,7 @@ async def get_current_account(
     )
 
     for row in rows:
-        if bcrypt.verify(token, row["key_hash"]):
+        if bcrypt.checkpw(token.encode('utf-8'), row["key_hash"].encode('utf-8')):
             return dict(row)
 
     raise HTTPException(

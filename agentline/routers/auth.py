@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr
-from passlib.hash import bcrypt
+import bcrypt
 
 from agentline.database import get_db
 from agentline.email_client import send_otp, verify_otp
@@ -130,7 +130,8 @@ async def verify(body: VerifyRequest, db=Depends(get_db)):
 
     # --- Generate API key ---
     raw_key = f"sk_live_{secrets.token_urlsafe(32)}"
-    key_hash = bcrypt.hash(raw_key)
+    salt = bcrypt.gensalt()
+    key_hash = bcrypt.hashpw(raw_key.encode('utf-8'), salt).decode('utf-8')
     key_id = f"key_{secrets.token_urlsafe(12)}"
     await db.execute(
         """INSERT INTO api_keys (id, account_id, key_hash, key_prefix)
