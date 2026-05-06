@@ -9,8 +9,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Expose port
-EXPOSE 8000
+# Railway injects PORT dynamically (usually 8080).
+# Fallback to 8000 for local development.
+ENV PORT=8000
 
-# Run with uvicorn
-CMD ["uvicorn", "agentline.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+EXPOSE ${PORT}
+
+# Use shell form so ${PORT} is expanded at runtime
+CMD uvicorn agentline.main:app --host 0.0.0.0 --port ${PORT} --workers 1

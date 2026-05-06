@@ -41,7 +41,10 @@ class Settings(BaseSettings):
     def db_dsn(self) -> str:
         """Returns asyncpg-compatible DSN from DATABASE_URL."""
         if self.DATABASE_URL:
-            return self.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
+            # asyncpg requires postgresql:// instead of postgres://
+            url = self.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
+            url = url.replace("postgres://", "postgresql://")
+            return url
         return "postgresql://agentline:secret@localhost:5432/agentline"
 
     model_config = {

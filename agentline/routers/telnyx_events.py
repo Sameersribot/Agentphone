@@ -37,8 +37,10 @@ async def telnyx_voice_webhook(request: Request):
         # Call connected — start media streaming to our WebSocket
         logger.info("Call %s answered, starting media stream", call_id)
         call = telnyx.Call(call_control_id=call_control_id)
+        # Strip protocol and trailing slashes for WS URL
+        host = settings.BASE_URL.replace("https://", "").replace("http://", "").rstrip("/")
         call.streaming_start(
-            stream_url=f"wss://{settings.BASE_URL.replace('https://', '')}/telnyx/media/{call_id}",
+            stream_url=f"wss://{host}/telnyx/media/{call_id}",
             stream_track="inbound_track",
         )
 

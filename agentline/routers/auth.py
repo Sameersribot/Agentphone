@@ -47,7 +47,10 @@ async def signup(body: SignupRequest, db=Depends(get_db)):
     try:
         await send_otp(body.human_email)
     except Exception as e:
-        raise HTTPException(502, f"Failed to send verification email: {str(e)}")
+        error_msg = str(e)
+        if "rate limit" in error_msg.lower() or "429" in error_msg:
+            raise HTTPException(429, "Email rate limit exceeded. Wait a few minutes and try again.")
+        raise HTTPException(502, f"Failed to send verification email: {error_msg}")
 
     return {
         "human_email": body.human_email,
@@ -82,7 +85,7 @@ async def verify(body: VerifyRequest, db=Depends(get_db)):
         raise HTTPException(400, "Invalid or expired verification code.")
 
     supabase_user = auth_result.get("user")
-    supabase_user_id = supabase_user.id if supabase_user else None
+    supabase_user_id = supabase_user.get("id") if supabase_user else None
 
     # --- Create account ---
     account_id = f"acct_{secrets.token_urlsafe(12)}"

@@ -74,4 +74,12 @@ async def root():
 
 @app.get("/health", tags=["Health"])
 async def health():
-    return {"status": "healthy"}
+    status = "healthy"
+    try:
+        from agentline.database import get_db_conn
+        async with get_db_conn() as db:
+            await db.fetchval("SELECT 1")
+    except Exception as e:
+        status = f"unhealthy: {e}"
+    
+    return {"status": status}
