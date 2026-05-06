@@ -1,0 +1,67 @@
+"""
+AgentLine — Configuration
+Loads environment variables with validation via pydantic-settings.
+Database URL is derived from SUPABASE_URL automatically.
+"""
+
+from pydantic_settings import BaseSettings
+from pydantic import computed_field
+from functools import lru_cache
+
+
+class Settings(BaseSettings):
+    # Supabase (Auth + Database)
+    SUPABASE_URL: str = ""
+    SUPABASE_ANON_KEY: str = ""
+    SUPABASE_SERVICE_ROLE_KEY: str = ""
+
+    # Redis
+    REDIS_URL: str = "redis://localhost:6379/0"
+
+    # Telnyx
+    TELNYX_API_KEY: str = ""
+    TELNYX_PUBLIC_KEY: str = ""
+    TELNYX_CONNECTION_ID: str = ""
+    TELNYX_MESSAGING_PROFILE_ID: str = ""
+
+    # Voice Pipeline
+    DEEPGRAM_API_KEY: str = ""
+    CARTESIA_API_KEY: str = ""
+    OPENAI_API_KEY: str = ""
+
+    # App
+    SECRET_KEY: str = "change-me-in-production"
+    BASE_URL: str = "http://localhost:8000"
+    WEBHOOK_SECRET_SALT: str = "change-me-in-production"
+
+    # Database — override if needed, otherwise derived from Supabase URL
+    DATABASE_URL: str = ""
+
+    @property
+    def db_dsn(self) -> str:
+        """
+        Returns asyncpg-compatible DSN.
+        If DATABASE_URL is set, use it directly.
+        Otherwise derive from SUPABASE_URL (project ref → pooler).
+        """
+        if self.DATABASE_URL:
+            return self.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
+        # Derive: https://xyz.supabase.co → project ref = xyz
+        if self.SUPABASE_URL:
+            ref = self.SUPABASE_URL.replace("https://", "").split(".")[0]
+            return f"postgresql://postgres.{ref}:[YOUR-PASSWORD]@aws-0-us-east-1.pooler.supabase.com:6543/postgres"
+        return "postgresql://agentline:secret@localhost:5432/agentline"
+
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",
+    }
+
+
+@lru_cache()
+def get_settings() -> Settings:
+    return Settings()
+
+
+settings = get_settings()
