@@ -6,7 +6,7 @@ Wraps Telnyx SDK for number provisioning, SMS, and call initiation.
 import telnyx
 from agentline.config import settings
 
-telnyx.api_key = settings.TELNYX_API_KEY
+client = telnyx.AsyncTelnyx(api_key=settings.TELNYX_API_KEY)
 
 
 async def provision_number(
@@ -19,33 +19,33 @@ async def provision_number(
     Returns dict with phone_number (E.164) and telnyx_id.
     """
     params = {
-        "filter[country_code]": country,
-        "filter[features]": ["sms", "voice"],
+        "country_code": country,
+        "features": ["sms", "voice"],
     }
     if area_code:
-        params["filter[national_destination_code]"] = area_code
+        params["national_destination_code"] = area_code
 
-    numbers = telnyx.AvailablePhoneNumber.list(**params)
+    numbers = await client.available_phone_numbers.list(filter=params)
     if not numbers.data:
         raise Exception(f"No numbers available in {country} {area_code or ''}")
 
     chosen = numbers.data[0].phone_number
 
     # Purchase the number and bind it to our TeXML application
-    order = telnyx.NumberOrder.create(
+    order = await client.number_orders.create(
         phone_numbers=[{"phone_number": chosen}],
         connection_id=settings.TELNYX_CONNECTION_ID,
     )
 
     return {
         "phone_number": chosen,
-        "telnyx_id": order.phone_numbers[0].id,
+        "telnyx_id": order.data.phone_numbers[0].id if order.data and order.data.phone_numbers else "pending",
     }
 
 
 async def release_number(telnyx_id: str):
     """Release a phone number back to Telnyx."""
-    telnyx.PhoneNumber.retrieve(telnyx_id).delete()
+    await client.phone_numbers.delete(telnyx_id)
 
 
 async def send_sms(
@@ -64,10 +64,20 @@ async def send_sms(
     if media_url:
         params["media_urls"] = [media_url]
 
-    result = telnyx.Message.create(**params)
+    result = await client.messages.send(**params)
+    
+    # Safely extract status from Pydantic model response
+    status = "queued"
+    if result.data and result.data.to:
+        to_item = result.data.to[0]
+        if hasattr(to_item, "status"):
+            status = to_item.status
+        elif isinstance(to_item, dict):
+            status = to_item.get("status", "queued")
+
     return {
-        "telnyx_message_id": result.id,
-        "status": result.to[0].get("status", "queued") if result.to else "queued",
+        "telnyx_message_id": result.data.id if result.data else "unknown",
+        "status": status,
     }
 
 
@@ -81,11 +91,11 @@ async def initiate_call(
     call_id is our internal ID, passed as client_state for webhook correlation.
     Returns the Telnyx call_control_id.
     """
-    call = telnyx.Call.create(
+    result = await client.calls.dial(
         connection_id=settings.TELNYX_CONNECTION_ID,
         from_=from_number,
         to=to_number,
         client_state=call_id,
         webhook_url=f"{settings.BASE_URL}/telnyx/voice",
     )
-    return call.call_control_id
+    return result.data.call_control_id if result.data else "unknown"
