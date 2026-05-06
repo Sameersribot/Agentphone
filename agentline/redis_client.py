@@ -1,35 +1,46 @@
 """
 AgentLine — Redis Client
-Async Redis connection for caching, rate limiting, and pub/sub.
+Optional async Redis connection for caching, rate limiting, and pub/sub.
+The app runs fine without Redis — it's only needed for future features.
 """
 
-import redis.asyncio as redis
-from agentline.config import settings
+import logging
 
-# Module-level Redis client
-_redis: redis.Redis | None = None
+logger = logging.getLogger(__name__)
+
+_redis = None
 
 
 async def init_redis():
-    """Initialize Redis connection. Call once at app startup."""
+    """Initialize Redis connection if REDIS_URL is configured."""
     global _redis
-    _redis = redis.from_url(
-        settings.REDIS_URL,
-        encoding="utf-8",
-        decode_responses=True,
-    )
+    from agentline.config import settings
+    if not settings.REDIS_URL:
+        logger.info("Redis not configured — skipping (not required for MVP)")
+        return
+    try:
+        import redis.asyncio as redis_lib
+        _redis = redis_lib.from_url(
+            settings.REDIS_URL,
+            encoding="utf-8",
+            decode_responses=True,
+        )
+        # Test connection
+        await _redis.ping()
+        logger.info("Redis connected")
+    except Exception as e:
+        logger.warning("Redis unavailable (%s) — running without it", e)
+        _redis = None
 
 
 async def close_redis():
-    """Close Redis connection. Call at app shutdown."""
+    """Close Redis connection if active."""
     global _redis
     if _redis:
         await _redis.close()
         _redis = None
 
 
-def get_redis() -> redis.Redis:
-    """Get the Redis client instance."""
-    if _redis is None:
-        raise RuntimeError("Redis not initialized. Call init_redis() first.")
+def get_redis():
+    """Get the Redis client instance. Returns None if Redis is not available."""
     return _redis

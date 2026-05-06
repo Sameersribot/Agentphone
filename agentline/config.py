@@ -39,17 +39,9 @@ class Settings(BaseSettings):
 
     @property
     def db_dsn(self) -> str:
-        """
-        Returns asyncpg-compatible DSN.
-        If DATABASE_URL is set, use it directly.
-        Otherwise derive from SUPABASE_URL (project ref → pooler).
-        """
+        """Returns asyncpg-compatible DSN from DATABASE_URL."""
         if self.DATABASE_URL:
             return self.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
-        # Derive: https://xyz.supabase.co → project ref = xyz
-        if self.SUPABASE_URL:
-            ref = self.SUPABASE_URL.replace("https://", "").split(".")[0]
-            return f"postgresql://postgres.{ref}:[YOUR-PASSWORD]@aws-0-us-east-1.pooler.supabase.com:6543/postgres"
         return "postgresql://agentline:secret@localhost:5432/agentline"
 
     model_config = {
