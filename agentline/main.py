@@ -84,3 +84,16 @@ async def health():
         status = f"unhealthy: {e}"
     
     return {"status": status}
+
+
+@app.get("/debug/urls", tags=["Health"])
+async def debug_urls():
+    """Show the callback URLs that Plivo will receive — useful for debugging."""
+    from agentline.config import settings
+    return {
+        "base_url_raw": settings.BASE_URL,
+        "base_url_clean": settings.base_url_clean,
+        "example_answer_url": f"{settings.base_url_clean}/plivo/answer/call_TEST",
+        "example_speech_url": f"{settings.base_url_clean}/plivo/speech/call_TEST",
+        "example_hangup_url": f"{settings.base_url_clean}/plivo/hangup/call_TEST",
+    }
