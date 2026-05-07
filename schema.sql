@@ -37,13 +37,18 @@ CREATE TABLE phone_numbers (
     id             TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
     account_id     TEXT REFERENCES accounts(id) ON DELETE CASCADE,
     agent_id       TEXT REFERENCES agents(id),
-    provider_id    TEXT UNIQUE NOT NULL,  -- Was telnyx_id, now generic for any provider
+    provider_id    TEXT UNIQUE NOT NULL,  -- Plivo uses raw number as ID
     phone_number   TEXT UNIQUE NOT NULL,
-    country        TEXT DEFAULT 'US',
+    country        TEXT DEFAULT 'IN',
     status         TEXT DEFAULT 'active',
     created_at     TIMESTAMPTZ DEFAULT now(),
     released_at    TIMESTAMPTZ
 );
+
+-- Enforce: each agent can only have ONE active number
+CREATE UNIQUE INDEX idx_one_active_number_per_agent
+    ON phone_numbers (agent_id)
+    WHERE status = 'active';
 
 CREATE TABLE calls (
     id                TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
