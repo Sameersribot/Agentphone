@@ -79,16 +79,17 @@ async def plivo_answer(request: Request, call_id: str):
     xml = f"""<Response>
     <Speak voice="Polly.Aditi">{_escape_xml(greeting)}</Speak>
     <GetInput action="{input_callback}" method="POST"
-              inputType="speech" speechModel="enhanced"
-              speechEndTimeout="2" executionTimeout="30"
-              language="en-IN" profanityFilter="false"
-              log="true">
-        <Speak voice="Polly.Aditi">I'm listening.</Speak>
+              inputType="speech"
+              speechEndTimeout="3" executionTimeout="30"
+              language="en-US" profanityFilter="false"
+              redirect="true" log="true">
+        <Speak voice="Polly.Aditi">I am listening.</Speak>
     </GetInput>
     <Speak voice="Polly.Aditi">I didn't catch that. Goodbye.</Speak>
 </Response>"""
 
     logger.info("Call %s — speaking greeting: %s", call_id, greeting[:60])
+    logger.info("Call %s — XML response:\n%s", call_id, xml)
     return _xml(xml)
 
 
@@ -117,11 +118,11 @@ async def plivo_speech_input(request: Request, call_id: str):
         xml = f"""<Response>
     <Speak voice="Polly.Aditi">I didn't hear anything. Could you please try again?</Speak>
     <GetInput action="{input_callback}" method="POST"
-              inputType="speech" speechModel="enhanced"
-              speechEndTimeout="2" executionTimeout="30"
-              language="en-IN" profanityFilter="false"
-              log="true">
-        <Speak voice="Polly.Aditi">I'm listening.</Speak>
+              inputType="speech"
+              speechEndTimeout="3" executionTimeout="30"
+              language="en-US" profanityFilter="false"
+              redirect="true" log="true">
+        <Speak voice="Polly.Aditi">I am listening.</Speak>
     </GetInput>
     <Speak voice="Polly.Aditi">I still couldn't hear you. Goodbye.</Speak>
 </Response>"""
@@ -233,10 +234,10 @@ async def plivo_speech_input(request: Request, call_id: str):
     xml = f"""<Response>
     <Speak voice="Polly.Aditi">{_escape_xml(response_text)}</Speak>
     <GetInput action="{input_callback}" method="POST"
-              inputType="speech" speechModel="enhanced"
-              speechEndTimeout="2" executionTimeout="30"
-              language="en-IN" profanityFilter="false"
-              log="true">
+              inputType="speech"
+              speechEndTimeout="3" executionTimeout="30"
+              language="en-US" profanityFilter="false"
+              redirect="true" log="true">
         <Speak voice="Polly.Aditi">Please go ahead.</Speak>
     </GetInput>
     <Speak voice="Polly.Aditi">Thank you for calling. Goodbye.</Speak>
@@ -392,11 +393,11 @@ async def plivo_inbound_call(request: Request):
     xml = f"""<Response>
     <Speak voice="Polly.Aditi">{_escape_xml(greeting)}</Speak>
     <GetInput action="{input_callback}" method="POST"
-              inputType="speech" speechModel="enhanced"
-              speechEndTimeout="2" executionTimeout="30"
-              language="en-IN" profanityFilter="false"
-              log="true">
-        <Speak voice="Polly.Aditi">I'm listening.</Speak>
+              inputType="speech"
+              speechEndTimeout="3" executionTimeout="30"
+              language="en-US" profanityFilter="false"
+              redirect="true" log="true">
+        <Speak voice="Polly.Aditi">I am listening.</Speak>
     </GetInput>
     <Speak voice="Polly.Aditi">I didn't catch that. Goodbye.</Speak>
 </Response>"""
