@@ -37,7 +37,7 @@ CREATE TABLE phone_numbers (
     id             TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
     account_id     TEXT REFERENCES accounts(id) ON DELETE CASCADE,
     agent_id       TEXT REFERENCES agents(id),
-    telnyx_id      TEXT UNIQUE NOT NULL,
+    provider_id    TEXT UNIQUE NOT NULL,  -- Was telnyx_id, now generic for any provider
     phone_number   TEXT UNIQUE NOT NULL,
     country        TEXT DEFAULT 'US',
     status         TEXT DEFAULT 'active',
@@ -46,36 +46,36 @@ CREATE TABLE phone_numbers (
 );
 
 CREATE TABLE calls (
-    id              TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
-    account_id      TEXT REFERENCES accounts(id),
-    agent_id        TEXT REFERENCES agents(id),
-    number_id       TEXT REFERENCES phone_numbers(id),
-    telnyx_call_id  TEXT,
-    direction       TEXT NOT NULL,
-    from_number     TEXT NOT NULL,
-    to_number       TEXT NOT NULL,
-    status          TEXT DEFAULT 'initiated',
-    system_prompt   TEXT,
-    duration_seconds INTEGER,
-    transcript      JSONB DEFAULT '[]',
-    started_at      TIMESTAMPTZ DEFAULT now(),
-    ended_at        TIMESTAMPTZ
-);
-
-CREATE TABLE messages (
     id                TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
     account_id        TEXT REFERENCES accounts(id),
     agent_id          TEXT REFERENCES agents(id),
     number_id         TEXT REFERENCES phone_numbers(id),
-    conversation_id   TEXT,
-    telnyx_message_id TEXT,
+    provider_call_id  TEXT,  -- Was telnyx_call_id, now generic
     direction         TEXT NOT NULL,
     from_number       TEXT NOT NULL,
     to_number         TEXT NOT NULL,
-    body              TEXT,
-    media_url         TEXT,
-    status            TEXT DEFAULT 'sent',
-    created_at        TIMESTAMPTZ DEFAULT now()
+    status            TEXT DEFAULT 'initiated',
+    system_prompt     TEXT,
+    duration_seconds  INTEGER,
+    transcript        JSONB DEFAULT '[]',
+    started_at        TIMESTAMPTZ DEFAULT now(),
+    ended_at          TIMESTAMPTZ
+);
+
+CREATE TABLE messages (
+    id                  TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    account_id          TEXT REFERENCES accounts(id),
+    agent_id            TEXT REFERENCES agents(id),
+    number_id           TEXT REFERENCES phone_numbers(id),
+    conversation_id     TEXT,
+    provider_message_id TEXT,  -- Was telnyx_message_id, now generic
+    direction           TEXT NOT NULL,
+    from_number         TEXT NOT NULL,
+    to_number           TEXT NOT NULL,
+    body                TEXT,
+    media_url           TEXT,
+    status              TEXT DEFAULT 'sent',
+    created_at          TIMESTAMPTZ DEFAULT now()
 );
 
 CREATE TABLE conversations (

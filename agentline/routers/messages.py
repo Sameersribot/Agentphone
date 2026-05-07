@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from agentline.auth_middleware import get_current_account
 from agentline.database import get_db
 from agentline.models.message import MessageSend, MessageOut
-from agentline.telnyx_client import send_sms
+from agentline.plivo_client import send_sms
 
 router = APIRouter(prefix="/v1/messages", tags=["Messages"])
 
@@ -75,7 +75,7 @@ async def send_message(
             conv_id,
         )
 
-    # Send via Telnyx
+    # Send via Plivo
     try:
         result = await send_sms(
             from_number=number["phone_number"],
@@ -92,14 +92,14 @@ async def send_message(
     await db.execute(
         """INSERT INTO messages
            (id, account_id, agent_id, number_id, conversation_id,
-            telnyx_message_id, direction, from_number, to_number, body, media_url, status, created_at)
+            provider_message_id, direction, from_number, to_number, body, media_url, status, created_at)
            VALUES ($1,$2,$3,$4,$5,$6,'outbound',$7,$8,$9,$10,$11,$12)""",
         msg_id,
         account["id"],
         body.agent_id,
         number["id"],
         conv_id,
-        result.get("telnyx_message_id"),
+        result.get("provider_message_id"),
         number["phone_number"],
         body.to_number,
         body.body,

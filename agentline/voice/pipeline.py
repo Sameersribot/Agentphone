@@ -1,9 +1,9 @@
 """
 AgentLine — Voice Pipeline
-Orchestrates the full voice loop: Telnyx audio → Deepgram STT → GPT-4o → Cartesia TTS → Telnyx audio.
+Orchestrates the full voice loop: Plivo audio → Deepgram STT → GPT-4o → Cartesia TTS → Plivo audio.
 
 Architecture:
-  Telnyx WS (raw mulaw audio in)
+  Plivo WS (raw mulaw audio in)
       ↓
   Deepgram (streaming STT)
       ↓ [on utterance end]
@@ -11,7 +11,7 @@ Architecture:
       ↓
   Cartesia (streaming TTS → raw mulaw)
       ↓
-  Telnyx WS (audio back to caller)
+  Plivo WS (audio back to caller)
 """
 
 import asyncio
@@ -32,16 +32,17 @@ logger = logging.getLogger(__name__)
 
 
 async def send_audio(ws, audio_bytes: bytes):
-    """Send audio back to Telnyx over the media WebSocket."""
+    """Send audio back to Plivo over the media WebSocket (bidirectional)."""
     payload = base64.b64encode(audio_bytes).decode("ascii")
+    # Plivo bidirectional stream uses the 'playAudio' event
     await ws.send_json({
-        "event": "media",
-        "media": {"payload": payload},
+        "event": "playAudio",
+        "media": {"payload": payload, "contentType": "audio/x-mulaw;rate=8000"},
     })
 
 
 async def run_pipeline(
-    telnyx_ws,
+    provider_ws,
     call_id: str,
     system_prompt: str,
     initial_greeting: str | None,
@@ -50,7 +51,7 @@ async def run_pipeline(
 ):
     """
     Main voice pipeline coroutine. One instance per active call.
-    Bridges Telnyx audio ↔ Deepgram STT ↔ LLM ↔ Cartesia TTS.
+    Bridges Plivo audio ↔ Deepgram STT ↔ LLM ↔ Cartesia TTS.
     """
     conversation_history: list[dict] = []
     transcript_turns: list[dict] = []
@@ -59,7 +60,7 @@ async def run_pipeline(
     if initial_greeting:
         try:
             audio = await tts_cartesia(initial_greeting, voice_id)
-            await send_audio(telnyx_ws, audio)
+            await send_audio(provider_ws, audio)
             transcript_turns.append({
                 "role": "agent",
                 "text": initial_greeting,
@@ -112,7 +113,7 @@ async def run_pipeline(
             # 4. TTS and send audio back
             try:
                 audio = await tts_cartesia(reply, voice_id)
-                await send_audio(telnyx_ws, audio)
+                await send_audio(provider_ws, audio)
             except Exception as e:
                 logger.error("TTS/send failed for call %s: %s", call_id, e)
 
@@ -120,15 +121,19 @@ async def run_pipeline(
     options = get_stt_options()
     await dg_connection.start(options)
 
-    # 5. Forward audio from Telnyx → Deepgram
+    # 5. Forward audio from Plivo → Deepgram
     try:
-        async for message in telnyx_ws.iter_text():
+        async for message in provider_ws.iter_text():
             data = json.loads(message)
-            if data.get("event") == "media":
+            event = data.get("event", "")
+
+            if event == "media":
                 audio_bytes = base64.b64decode(data["media"]["payload"])
                 await dg_connection.send(audio_bytes)
-            elif data.get("event") == "stop":
-                logger.info("Telnyx sent stop event for call %s", call_id)
+            elif event == "start":
+                logger.info("Plivo stream started for call %s", call_id)
+            elif event == "stop":
+                logger.info("Plivo sent stop event for call %s", call_id)
                 break
     except Exception as e:
         logger.info("WebSocket closed for call %s: %s", call_id, e)

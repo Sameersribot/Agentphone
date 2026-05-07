@@ -18,11 +18,10 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
 
-    # Telnyx
-    TELNYX_API_KEY: str = ""
-    TELNYX_PUBLIC_KEY: str = ""
-    TELNYX_CONNECTION_ID: str = ""
-    TELNYX_MESSAGING_PROFILE_ID: str = ""
+    # Plivo
+    PLIVO_AUTH_ID: str = ""
+    PLIVO_AUTH_TOKEN: str = ""
+    PLIVO_APP_ID: str = ""  # Plivo Application ID for voice
 
     # Voice Pipeline
     DEEPGRAM_API_KEY: str = ""

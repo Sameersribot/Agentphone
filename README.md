@@ -7,7 +7,7 @@ AI-native telephony platform — give your agent a phone number, voice, and SMS.
 - **FastAPI** — async Python API server
 - **PostgreSQL** (Supabase) — persistent storage
 - **Redis** — caching & rate limiting
-- **Telnyx** — phone numbers, SMS, voice calls
+- **Plivo** — phone numbers, SMS, voice calls
 - **Deepgram** — real-time speech-to-text
 - **Cartesia** — text-to-speech
 - **Claude / GPT-4o** — conversational AI
@@ -19,6 +19,7 @@ AI-native telephony platform — give your agent a phone number, voice, and SMS.
 ```bash
 cp .env.example .env
 # Fill in your API keys in .env
+# Sign up at https://console.plivo.com for Plivo credentials
 ```
 
 ### 2. Run with Docker Compose
@@ -55,12 +56,17 @@ uvicorn agentline.main:app --reload
 ## Voice Pipeline
 
 ```
-Telnyx WS (mulaw audio in)
+Plivo WS (mulaw audio in)
     → Deepgram STT (streaming)
     → Claude / GPT-4o (response)
     → Cartesia TTS (mulaw audio out)
-    → Telnyx WS (back to caller)
+    → Plivo WS (back to caller)
 ```
+
+## Telephony Provider
+
+This project uses **Plivo** for telephony. A full Telnyx revert snapshot is preserved in
+`TELNYX_REVERT_SNAPSHOT.md` if you ever need to switch back.
 
 ## API Docs
 

@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from agentline.auth_middleware import get_current_account
 from agentline.database import get_db
 from agentline.models.call import CallRequest
-from agentline.telnyx_client import initiate_call
+from agentline.plivo_client import initiate_call
 
 router = APIRouter(prefix="/v1/calls", tags=["Calls"])
 
@@ -56,7 +56,7 @@ async def create_call(
     )
 
     try:
-        telnyx_call_id = await initiate_call(
+        provider_call_id = await initiate_call(
             from_number=number["phone_number"],
             to_number=body.to_number,
             call_id=call_id,
@@ -66,8 +66,8 @@ async def create_call(
         raise HTTPException(502, f"Failed to initiate call: {str(e)}")
 
     await db.execute(
-        "UPDATE calls SET telnyx_call_id=$1, status='in-progress' WHERE id=$2",
-        telnyx_call_id, call_id,
+        "UPDATE calls SET provider_call_id=$1, status='in-progress' WHERE id=$2",
+        provider_call_id, call_id,
     )
 
     return {

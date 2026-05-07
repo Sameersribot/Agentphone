@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 async def tts_cartesia(text: str, voice_id: str) -> bytes:
     """
     Convert text to mulaw 8kHz audio via Cartesia API.
-    Returns raw audio bytes ready for Telnyx media stream.
+    Returns raw audio bytes ready for Plivo media stream.
     """
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(

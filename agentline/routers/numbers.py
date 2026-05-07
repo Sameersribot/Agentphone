@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from agentline.auth_middleware import get_current_account
 from agentline.database import get_db
 from agentline.models.number import NumberProvision, NumberOut
-from agentline.telnyx_client import provision_number, release_number
+from agentline.plivo_client import provision_number, release_number
 
 router = APIRouter(prefix="/v1/numbers", tags=["Numbers"])
 
@@ -22,7 +22,7 @@ async def provision(
     db=Depends(get_db),
 ):
     """
-    Provision a new phone number from Telnyx and attach it to an agent.
+    Provision a new phone number from Plivo and attach it to an agent.
     """
     # Verify agent belongs to this account
     agent = await db.fetchrow(
@@ -33,7 +33,7 @@ async def provision(
     if not agent:
         raise HTTPException(404, "Agent not found.")
 
-    # Provision via Telnyx
+    # Provision via Plivo
     try:
         number_data = await provision_number(
             country=body.country,
@@ -46,12 +46,12 @@ async def provision(
     number_id = f"num_{secrets.token_urlsafe(12)}"
     await db.execute(
         """INSERT INTO phone_numbers
-           (id, account_id, agent_id, telnyx_id, phone_number, country)
+           (id, account_id, agent_id, provider_id, phone_number, country)
            VALUES ($1, $2, $3, $4, $5, $6)""",
         number_id,
         account["id"],
         body.agent_id,
-        number_data["telnyx_id"],
+        number_data["provider_id"],
         number_data["phone_number"],
         body.country,
     )
@@ -136,7 +136,7 @@ async def release(
     account=Depends(get_current_account),
     db=Depends(get_db),
 ):
-    """Release a phone number back to Telnyx."""
+    """Release a phone number back to Plivo."""
     row = await db.fetchrow(
         "SELECT * FROM phone_numbers WHERE id = $1 AND account_id = $2",
         number_id,
@@ -146,7 +146,7 @@ async def release(
         raise HTTPException(404, "Number not found.")
 
     try:
-        await release_number(row["telnyx_id"])
+        await release_number(row["provider_id"])
     except Exception:
         pass  # Best effort — number may already be released
 

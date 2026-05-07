@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from agentline.database import init_db, close_db
 from agentline.redis_client import init_redis, close_redis
-from agentline.routers import auth, agents, numbers, messages, calls, webhooks, usage, telnyx_events
+from agentline.routers import auth, agents, numbers, messages, calls, webhooks, usage, plivo_events
 
 # Configure logging
 logging.basicConfig(
@@ -39,7 +39,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AgentLine",
     description="AI-native telephony platform — give your agent a phone number, voice, and SMS.",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
@@ -60,15 +60,16 @@ app.include_router(messages.router)
 app.include_router(calls.router)
 app.include_router(webhooks.router)
 app.include_router(usage.router)
-app.include_router(telnyx_events.router)
+app.include_router(plivo_events.router)
 
 
 @app.get("/", tags=["Health"])
 async def root():
     return {
         "service": "AgentLine",
-        "version": "0.1.0",
+        "version": "0.2.0",
         "status": "operational",
+        "telephony_provider": "plivo",
     }
 
 

@@ -14,7 +14,7 @@ metadata:
 # AgentLine — Phone Call & SMS Skill
 
 You can make phone calls and send SMS messages through the AgentLine API.
-AgentLine manages real phone numbers, voice agents (STT → LLM → TTS), and SMS conversations via Telnyx.
+AgentLine manages real phone numbers, voice agents (STT → LLM → TTS), and SMS conversations via Plivo.
 
 ## Authentication
 

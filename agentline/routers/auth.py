@@ -14,7 +14,7 @@ import bcrypt
 
 from agentline.database import get_db
 from agentline.email_client import send_otp, verify_otp
-from agentline.telnyx_client import provision_number
+from agentline.plivo_client import provision_number
 
 router = APIRouter(prefix="/v0/agent", tags=["Auth"])
 
@@ -68,7 +68,7 @@ async def verify(body: VerifyRequest, db=Depends(get_db)):
     Verify the OTP code via Supabase Auth. On success, provisions:
     - Account (linked to Supabase user)
     - Starter agent
-    - US phone number (via Telnyx)
+    - US phone number (via Plivo)
     - API key (returned once, never shown again)
     """
     # Check if account already exists
@@ -107,7 +107,7 @@ async def verify(body: VerifyRequest, db=Depends(get_db)):
         agent_name,
     )
 
-    # --- Provision US phone number via Telnyx ---
+    # --- Provision US phone number via Plivo ---
     try:
         number_data = await provision_number(country="US", agent_id=agent_id)
     except Exception:
@@ -119,12 +119,12 @@ async def verify(body: VerifyRequest, db=Depends(get_db)):
         number_id = f"num_{secrets.token_urlsafe(12)}"
         phone_number = number_data["phone_number"]
         await db.execute(
-            """INSERT INTO phone_numbers (id, account_id, agent_id, telnyx_id, phone_number)
+            """INSERT INTO phone_numbers (id, account_id, agent_id, provider_id, phone_number)
                VALUES ($1, $2, $3, $4, $5)""",
             number_id,
             account_id,
             agent_id,
-            number_data["telnyx_id"],
+            number_data["provider_id"],
             phone_number,
         )
 
