@@ -1,17 +1,28 @@
 """
 AgentLine — Calls Router
 Initiate and manage voice calls.
+
+Agent-Controlled Relay Mode:
+  1. Agent creates call → POST /v1/calls
+  2. Agent polls for speech → GET /v1/calls/{id}/listen (supports long-polling)
+  3. Agent sends response → POST /v1/calls/{id}/speak
+  No webhook registration needed.
 """
 
 import secrets
+import asyncio
+import json
+import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from agentline.auth_middleware import get_current_account
-from agentline.database import get_db
+from agentline.database import get_db, get_db_conn
 from agentline.models.call import CallRequest
 from agentline.plivo_client import initiate_call
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/calls", tags=["Calls"])
 
@@ -22,7 +33,12 @@ async def create_call(
     account=Depends(get_current_account),
     db=Depends(get_db),
 ):
-    """Initiate an outbound voice call through the STT → LLM → TTS pipeline."""
+    """
+    Initiate an outbound voice call.
+    
+    The call will ring the person, speak the agent's greeting,
+    then wait for speech. Use /listen and /speak to interact.
+    """
     agent = await db.fetchrow(
         "SELECT * FROM agents WHERE id = $1 AND account_id = $2",
         body.agent_id, account["id"],
@@ -114,7 +130,7 @@ async def get_call(call_id: str, account=Depends(get_current_account), db=Depend
 
 @router.get("/{call_id}/transcript")
 async def get_transcript(call_id: str, account=Depends(get_current_account), db=Depends(get_db)):
-    """Get the transcript for a completed call."""
+    """Get the full transcript for a call."""
     row = await db.fetchrow(
         "SELECT transcript, status FROM calls WHERE id=$1 AND account_id=$2",
         call_id, account["id"],
@@ -132,11 +148,12 @@ async def speak_on_call(
     db=Depends(get_db),
 ):
     """
-    Queue text to be spoken on an active call.
-    The text will be spoken on the next speech turn when Plivo
-    calls back for the next response.
-
-    Body: {"text": "Hello, your order is confirmed."}
+    Send text to be spoken on an active call.
+    
+    The Plivo wait loop will pick this up within ~3 seconds
+    and speak it to the person on the phone.
+    
+    Body: {"text": "Sure, I can help you with that."}
     """
     text = body.get("text", "")
     if not text:
@@ -157,19 +174,31 @@ async def speak_on_call(
         call_id, text,
     )
 
+    logger.info("Call %s — agent queued: %s", call_id, text[:80])
     return {"queued": True, "call_id": call_id, "text": text}
 
 
 @router.get("/{call_id}/listen")
 async def listen_from_call(
     call_id: str,
+    wait: bool = Query(False, description="Long-poll: hold connection until new speech arrives (max 25s)"),
+    after: int = Query(0, description="Only return transcript entries after this index"),
     account=Depends(get_current_account),
     db=Depends(get_db),
 ):
     """
-    Get the latest speech received from the caller on an active call.
-    Returns the full transcript so the agent can see the conversation.
+    Get speech from the caller on an active call.
+    
+    Two modes:
+    - **Instant** (default): Returns current transcript immediately
+    - **Long-poll** (`?wait=true`): Holds connection up to 25 seconds 
+      until new speech arrives, then returns it. Perfect for agents
+      that want to react in real-time without webhooks.
+    
+    Use `?after=N` to only get transcript entries after index N,
+    so you don't re-process old messages.
     """
+    # Verify ownership
     call = await db.fetchrow(
         "SELECT transcript, status FROM calls WHERE id=$1 AND account_id=$2",
         call_id, account["id"],
@@ -177,12 +206,67 @@ async def listen_from_call(
     if not call:
         raise HTTPException(404, "Call not found.")
 
-    transcript = call["transcript"] or []
+    if not wait:
+        # Instant mode — return current state
+        return _format_listen_response(call_id, call, after)
+
+    # Long-poll mode — wait for new speech (up to 25 seconds)
+    initial_len = _transcript_len(call.get("transcript"))
+
+    for _ in range(25):  # Check once per second, max 25 seconds
+        await asyncio.sleep(1)
+
+        async with get_db_conn() as poll_db:
+            call = await poll_db.fetchrow(
+                "SELECT transcript, status FROM calls WHERE id=$1",
+                call_id,
+            )
+
+        if not call:
+            break
+
+        current_len = _transcript_len(call.get("transcript"))
+
+        # New speech arrived!
+        if current_len > initial_len:
+            return _format_listen_response(call_id, call, after)
+
+        # Call ended
+        if call["status"] == "completed":
+            return _format_listen_response(call_id, call, after)
+
+    # Timeout — return current state
+    return _format_listen_response(call_id, call, after)
+
+
+def _transcript_len(transcript) -> int:
+    """Get the number of entries in a transcript."""
+    if not transcript:
+        return 0
+    if isinstance(transcript, list):
+        return len(transcript)
+    try:
+        return len(json.loads(transcript))
+    except (json.JSONDecodeError, TypeError):
+        return 0
+
+
+def _format_listen_response(call_id: str, call, after: int = 0) -> dict:
+    """Format the /listen response with transcript filtering."""
+    transcript = call.get("transcript") or []
+    if isinstance(transcript, str):
+        try:
+            transcript = json.loads(transcript)
+        except (json.JSONDecodeError, TypeError):
+            transcript = []
+
+    # Filter to only new entries if after is specified
+    new_entries = transcript[after:] if after > 0 else transcript
 
     # Get last human speech
     last_human = None
-    for turn in reversed(transcript if isinstance(transcript, list) else []):
-        if turn.get("role") == "human":
+    for turn in reversed(transcript):
+        if isinstance(turn, dict) and turn.get("role") == "human":
             last_human = turn
             break
 
@@ -190,5 +274,7 @@ async def listen_from_call(
         "call_id": call_id,
         "status": call["status"],
         "last_speech": last_human,
+        "new_entries": new_entries,
+        "total_turns": len(transcript),
         "transcript": transcript,
     }
