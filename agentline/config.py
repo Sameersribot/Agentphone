@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     DATABASE_URL: str = ""
 
     @property
+    def base_url_clean(self) -> str:
+        """BASE_URL with trailing slashes stripped to prevent double-slash URLs."""
+        return self.BASE_URL.rstrip("/")
+
+    @property
     def db_dsn(self) -> str:
         """Returns asyncpg-compatible DSN from DATABASE_URL."""
         if self.DATABASE_URL:

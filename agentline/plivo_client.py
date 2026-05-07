@@ -226,8 +226,8 @@ async def initiate_call(
 
     Returns: Plivo request_uuid (call identifier)
     """
-    answer_url = f"{settings.BASE_URL}/plivo/answer/{call_id}"
-    hangup_url = f"{settings.BASE_URL}/plivo/hangup/{call_id}"
+    answer_url = f"{settings.base_url_clean}/plivo/answer/{call_id}"
+    hangup_url = f"{settings.base_url_clean}/plivo/hangup/{call_id}"
 
     try:
         response = await _run(

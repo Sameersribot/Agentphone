@@ -74,7 +74,7 @@ async def plivo_answer(request: Request, call_id: str):
                 greeting = "Hello, I'm your assistant. How can I help you?"
 
     # Build the response: Speak greeting, then listen for speech
-    input_callback = f"{settings.BASE_URL}/plivo/speech/{call_id}"
+    input_callback = f"{settings.base_url_clean}/plivo/speech/{call_id}"
     
     xml = f"""<Response>
     <Speak voice="Polly.Aditi">{_escape_xml(greeting)}</Speak>
@@ -113,7 +113,7 @@ async def plivo_speech_input(request: Request, call_id: str):
 
     if not speech:
         # No speech detected — ask again or hang up
-        input_callback = f"{settings.BASE_URL}/plivo/speech/{call_id}"
+        input_callback = f"{settings.base_url_clean}/plivo/speech/{call_id}"
         xml = f"""<Response>
     <Speak voice="Polly.Aditi">I didn't hear anything. Could you please try again?</Speak>
     <GetInput action="{input_callback}" method="POST"
@@ -228,7 +228,7 @@ async def plivo_speech_input(request: Request, call_id: str):
         )
 
     # Speak the response and continue listening
-    input_callback = f"{settings.BASE_URL}/plivo/speech/{call_id}"
+    input_callback = f"{settings.base_url_clean}/plivo/speech/{call_id}"
     
     xml = f"""<Response>
     <Speak voice="Polly.Aditi">{_escape_xml(response_text)}</Speak>
@@ -387,7 +387,7 @@ async def plivo_inbound_call(request: Request):
     if agent and agent.get("initial_greeting"):
         greeting = agent["initial_greeting"]
 
-    input_callback = f"{settings.BASE_URL}/plivo/speech/{call_id}"
+    input_callback = f"{settings.base_url_clean}/plivo/speech/{call_id}"
 
     xml = f"""<Response>
     <Speak voice="Polly.Aditi">{_escape_xml(greeting)}</Speak>
