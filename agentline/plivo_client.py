@@ -132,7 +132,7 @@ async def list_plivo_numbers() -> list[dict]:
     Useful for debugging or manual attachment.
     """
     try:
-        response = await _run(_get_client().numbers.list, limit=100)
+        response = await _run(_get_client().numbers.list, limit=20)
         numbers = list(response) if response else []
         return [
             {
