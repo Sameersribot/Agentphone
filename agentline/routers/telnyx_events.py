@@ -6,6 +6,7 @@ Handles Telnyx voice webhooks and media WebSocket connections.
 import secrets
 import json
 import logging
+import base64
 
 import telnyx
 from fastapi import APIRouter, Request, WebSocket
@@ -13,6 +14,7 @@ from fastapi import APIRouter, Request, WebSocket
 from agentline.config import settings
 from agentline.database import get_db_conn
 from agentline.webhook_dispatcher import dispatch_webhook
+from agentline.telnyx_client import client
 
 logger = logging.getLogger(__name__)
 
@@ -27,8 +29,13 @@ async def telnyx_voice_webhook(request: Request):
     payload = body["data"]["payload"]
 
     call_control_id = payload.get("call_control_id")
-    client_state = payload.get("client_state")  # Our internal call_id
-    call_id = client_state
+    client_state_raw = payload.get("client_state")
+    
+    # client_state is passed as base64 encoded string from our initiate_call in Telnyx SDK v4
+    try:
+        call_id = base64.b64decode(client_state_raw).decode('utf-8') if client_state_raw else None
+    except Exception:
+        call_id = client_state_raw
 
     if event_type == "call.initiated":
         logger.info("Call %s initiated", call_id)
@@ -36,10 +43,10 @@ async def telnyx_voice_webhook(request: Request):
     elif event_type == "call.answered":
         # Call connected — start media streaming to our WebSocket
         logger.info("Call %s answered, starting media stream", call_id)
-        call = telnyx.Call(call_control_id=call_control_id)
         # Strip protocol and trailing slashes for WS URL
         host = settings.BASE_URL.replace("https://", "").replace("http://", "").rstrip("/")
-        call.streaming_start(
+        await client.calls.actions.start_streaming(
+            call_control_id=call_control_id,
             stream_url=f"wss://{host}/telnyx/media/{call_id}",
             stream_track="inbound_track",
         )

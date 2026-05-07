@@ -81,6 +81,8 @@ async def send_sms(
     }
 
 
+import base64
+
 async def initiate_call(
     from_number: str,
     to_number: str,
@@ -91,11 +93,12 @@ async def initiate_call(
     call_id is our internal ID, passed as client_state for webhook correlation.
     Returns the Telnyx call_control_id.
     """
+    encoded_state = base64.b64encode(call_id.encode('utf-8')).decode('utf-8')
     result = await client.calls.dial(
         connection_id=settings.TELNYX_CONNECTION_ID,
         from_=from_number,
         to=to_number,
-        client_state=call_id,
+        client_state=encoded_state,
         webhook_url=f"{settings.BASE_URL}/telnyx/voice",
     )
     return result.data.call_control_id if result.data else "unknown"
