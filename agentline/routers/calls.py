@@ -122,3 +122,73 @@ async def get_transcript(call_id: str, account=Depends(get_current_account), db=
     if not row:
         raise HTTPException(404, "Call not found.")
     return {"call_id": call_id, "status": row["status"], "transcript": row["transcript"] or []}
+
+
+@router.post("/{call_id}/speak")
+async def speak_on_call(
+    call_id: str,
+    body: dict,
+    account=Depends(get_current_account),
+    db=Depends(get_db),
+):
+    """
+    Queue text to be spoken on an active call.
+    The text will be spoken on the next speech turn when Plivo
+    calls back for the next response.
+
+    Body: {"text": "Hello, your order is confirmed."}
+    """
+    text = body.get("text", "")
+    if not text:
+        raise HTTPException(400, "text is required")
+
+    call = await db.fetchrow(
+        "SELECT * FROM calls WHERE id=$1 AND account_id=$2",
+        call_id, account["id"],
+    )
+    if not call:
+        raise HTTPException(404, "Call not found.")
+    if call["status"] not in ("in-progress", "initiated"):
+        raise HTTPException(400, f"Call is {call['status']}, cannot speak on it.")
+
+    await db.execute(
+        """INSERT INTO call_responses (call_id, response_text, spoken, created_at)
+           VALUES ($1, $2, false, now())""",
+        call_id, text,
+    )
+
+    return {"queued": True, "call_id": call_id, "text": text}
+
+
+@router.get("/{call_id}/listen")
+async def listen_from_call(
+    call_id: str,
+    account=Depends(get_current_account),
+    db=Depends(get_db),
+):
+    """
+    Get the latest speech received from the caller on an active call.
+    Returns the full transcript so the agent can see the conversation.
+    """
+    call = await db.fetchrow(
+        "SELECT transcript, status FROM calls WHERE id=$1 AND account_id=$2",
+        call_id, account["id"],
+    )
+    if not call:
+        raise HTTPException(404, "Call not found.")
+
+    transcript = call["transcript"] or []
+
+    # Get last human speech
+    last_human = None
+    for turn in reversed(transcript if isinstance(transcript, list) else []):
+        if turn.get("role") == "human":
+            last_human = turn
+            break
+
+    return {
+        "call_id": call_id,
+        "status": call["status"],
+        "last_speech": last_human,
+        "transcript": transcript,
+    }

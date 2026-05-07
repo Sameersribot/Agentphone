@@ -1,7 +1,6 @@
-"""Quick script to check actual DB schema and insert numbers."""
+"""Apply migration 003: create call_responses table."""
 import asyncio
 import os
-import secrets
 from dotenv import load_dotenv
 load_dotenv()
 import asyncpg
@@ -10,23 +9,34 @@ async def main():
     db_url = os.getenv("DATABASE_URL", "").replace("postgres://", "postgresql://")
     conn = await asyncpg.connect(db_url)
 
-    # Check actual columns in phone_numbers table
-    cols = await conn.fetch("""
-        SELECT column_name, data_type, is_nullable, column_default
-        FROM information_schema.columns
-        WHERE table_name = 'phone_numbers'
-        ORDER BY ordinal_position
+    print("Creating call_responses table...")
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS call_responses (
+            id SERIAL PRIMARY KEY,
+            call_id TEXT REFERENCES calls(id) ON DELETE CASCADE,
+            response_text TEXT NOT NULL,
+            spoken BOOLEAN DEFAULT false,
+            created_at TIMESTAMPTZ DEFAULT now()
+        )
     """)
-    print("=== phone_numbers COLUMNS ===")
-    for c in cols:
-        print(f"  {c['column_name']:20s} {c['data_type']:20s} nullable={c['is_nullable']}  default={c['column_default']}")
+    print("OK")
 
-    # Check existing numbers
-    existing = await conn.fetch("SELECT * FROM phone_numbers")
-    print(f"\n=== EXISTING ROWS ({len(existing)}) ===")
-    for r in existing:
-        print(f"  {dict(r)}")
+    print("Creating index...")
+    await conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_call_responses_pending
+        ON call_responses (call_id, spoken)
+        WHERE spoken = false
+    """)
+    print("OK")
+
+    # Verify
+    cols = await conn.fetch("""
+        SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'call_responses' ORDER BY ordinal_position
+    """)
+    print(f"call_responses columns: {[c['column_name'] for c in cols]}")
 
     await conn.close()
+    print("Done!")
 
 asyncio.run(main())
