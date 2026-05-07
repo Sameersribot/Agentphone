@@ -1,18 +1,18 @@
 """
-AgentLine — Plivo Events Router (Relay Mode)
-Handles all Plivo webhooks for voice and SMS.
+AgentLine — Plivo Events Router (Hybrid Relay Mode)
+Voice Architecture:
+  TTS: Plivo <Speak> with Polly voices (FREE)
+  STT: Plivo <Record> → Deepgram transcription (CHEAP + ACCURATE)
 
-Voice Architecture (Agent-Controlled Relay — no LLM layer):
-  1. Agent creates call via POST /v1/calls with greeting text
-  2. Plivo calls the person → speaks the greeting
-  3. Person speaks → Plivo captures speech via <GetInput>
-  4. AgentLine saves transcript + dispatches webhook to agent
-  5. Call enters wait loop → polls for agent's response
-  6. Agent sends response via POST /v1/calls/{id}/speak
-  7. AgentLine speaks the response → listens again → loop
-
-Plivo webhooks are form-encoded (not JSON).
-Plivo voice responses use Plivo XML (not JSON).
+Flow:
+  1. Agent creates call → Plivo calls person → <Speak> greeting
+  2. <Record> captures caller's speech → Plivo stores recording
+  3. Plivo POSTs recording URL to /plivo/recorded/{call_id}
+  4. We send recording to Deepgram for transcription
+  5. Transcript dispatched to agent via webhook
+  6. Call enters wait loop for agent's response
+  7. Agent responds via POST /v1/calls/{id}/speak
+  8. <Speak> the response → <Record> again → loop
 """
 
 import secrets
@@ -20,6 +20,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
+import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
 
@@ -33,12 +34,10 @@ router = APIRouter(prefix="/plivo", tags=["Plivo Events"])
 
 
 def _xml(body: str) -> Response:
-    """Return a Plivo XML response."""
     return Response(content=body, media_type="application/xml")
 
 
 def _escape_xml(text: str) -> str:
-    """Escape special characters for safe XML embedding."""
     return (
         text.replace("&", "&amp;")
         .replace("<", "&lt;")
@@ -48,22 +47,72 @@ def _escape_xml(text: str) -> str:
     )
 
 
+def _record_xml(call_id: str) -> str:
+    """Generate the <Record> XML block that captures caller speech."""
+    record_url = f"{settings.base_url_clean}/plivo/recorded/{call_id}"
+    return f"""<Record action="{record_url}" method="POST"
+            maxLength="30" timeout="5" finishOnKey="#"
+            playBeep="false" redirect="true"/>"""
+
+
+def _listen_xml(call_id: str, prompt: str = "I am listening.") -> str:
+    """Generate XML: speak a prompt, then record the caller's response."""
+    record_url = f"{settings.base_url_clean}/plivo/recorded/{call_id}"
+    return f"""<Response>
+    <Speak voice="Polly.Aditi">{_escape_xml(prompt)}</Speak>
+    <Record action="{record_url}" method="POST"
+            maxLength="30" timeout="5" finishOnKey="#"
+            playBeep="false" redirect="true"/>
+    <Speak voice="Polly.Aditi">I did not hear anything. Goodbye.</Speak>
+</Response>"""
+
+
+# ────────────────────────────────────────────────────────────
+# Deepgram STT — transcribe a recording URL
+# ────────────────────────────────────────────────────────────
+
+async def transcribe_with_deepgram(recording_url: str) -> str:
+    """
+    Send a recording URL to Deepgram's pre-recorded API.
+    Returns the transcribed text.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                "https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true&language=en",
+                headers={
+                    "Authorization": f"Token {settings.DEEPGRAM_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={"url": recording_url},
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            # Extract transcript from Deepgram response
+            transcript = (
+                data.get("results", {})
+                .get("channels", [{}])[0]
+                .get("alternatives", [{}])[0]
+                .get("transcript", "")
+            )
+            return transcript.strip()
+    except Exception as e:
+        logger.error("Deepgram transcription failed: %s", e)
+        return ""
+
+
 # ────────────────────────────────────────────────────────────
 # Voice — Answer URL (outbound calls)
-# When callee answers, speak greeting and start listening.
 # ────────────────────────────────────────────────────────────
 
 @router.post("/answer/{call_id}")
 async def plivo_answer(request: Request, call_id: str):
-    """
-    Plivo hits this URL when an outbound call is answered.
-    Speaks the greeting, then listens for the caller's speech.
-    """
+    """Call answered — speak greeting, then record caller's response."""
     form = await request.form()
     call_uuid = form.get("CallUUID", "")
     logger.info("Call %s answered (Plivo UUID: %s)", call_id, call_uuid)
 
-    # Save Plivo's call UUID
     if call_uuid:
         async with get_db_conn() as db:
             await db.execute(
@@ -71,7 +120,7 @@ async def plivo_answer(request: Request, call_id: str):
                 call_uuid, call_id,
             )
 
-    # Get the call's greeting text from agent config
+    # Get greeting from agent config
     greeting = "Hello, how can I help you today?"
     async with get_db_conn() as db:
         call = await db.fetchrow("SELECT * FROM calls WHERE id=$1", call_id)
@@ -80,124 +129,93 @@ async def plivo_answer(request: Request, call_id: str):
             if agent and agent.get("initial_greeting"):
                 greeting = agent["initial_greeting"]
 
-    # Speak greeting, then listen for speech
-    speech_url = f"{settings.base_url_clean}/plivo/speech/{call_id}"
-
-    xml = f"""<Response>
-    <Speak voice="Polly.Aditi">{_escape_xml(greeting)}</Speak>
-    <GetInput action="{speech_url}" method="POST"
-              inputType="speech"
-              speechEndTimeout="3" executionTimeout="30"
-              language="en-US" profanityFilter="false"
-              redirect="true" log="true">
-        <Speak voice="Polly.Aditi">I am listening.</Speak>
-    </GetInput>
-    <Speak voice="Polly.Aditi">I did not hear anything. Goodbye.</Speak>
-</Response>"""
-
+    xml = _listen_xml(call_id, greeting)
     logger.info("Call %s — greeting: %s", call_id, greeting[:60])
     logger.info("Call %s — XML:\n%s", call_id, xml)
     return _xml(xml)
 
 
 # ────────────────────────────────────────────────────────────
-# Voice — Speech Input Callback
-# Plivo POSTs transcribed speech here.
-# We save it, dispatch webhook to agent, then wait for
-# the agent to respond via POST /v1/calls/{id}/speak.
+# Voice — Recording Callback
+# Plivo POSTs here when <Record> finishes.
+# We get the recording URL, send to Deepgram, dispatch to agent.
 # ────────────────────────────────────────────────────────────
 
-@router.post("/speech/{call_id}")
-async def plivo_speech_input(request: Request, call_id: str):
+@router.post("/recorded/{call_id}")
+async def plivo_recording_callback(request: Request, call_id: str):
     """
-    Plivo POSTs transcribed speech from the caller.
-    Save transcript, dispatch to agent webhook, then wait for agent response.
+    Plivo POSTs here after <Record> captures audio.
+    Download recording → Deepgram STT → save transcript → webhook → wait loop.
     """
     form = await request.form()
-    speech = form.get("Speech", "")
+    recording_url = form.get("RecordUrl", "")
+    recording_duration = form.get("RecordingDuration", "0")
     call_uuid = form.get("CallUUID", "")
 
-    logger.info("Call %s — caller said: '%s'", call_id, speech)
+    logger.info("Call %s — recording received (%ss): %s", call_id, recording_duration, recording_url)
 
-    if not speech:
-        # No speech — ask again
-        speech_url = f"{settings.base_url_clean}/plivo/speech/{call_id}"
-        xml = f"""<Response>
-    <Speak voice="Polly.Aditi">I did not hear anything. Could you try again?</Speak>
-    <GetInput action="{speech_url}" method="POST"
-              inputType="speech"
-              speechEndTimeout="3" executionTimeout="30"
-              language="en-US" profanityFilter="false"
-              redirect="true" log="true">
-        <Speak voice="Polly.Aditi">I am listening.</Speak>
-    </GetInput>
-    <Speak voice="Polly.Aditi">I still could not hear you. Goodbye.</Speak>
-</Response>"""
+    # Skip if no recording (caller hung up or silence)
+    if not recording_url or recording_duration == "0":
+        logger.info("Call %s — empty recording, asking again", call_id)
+        xml = _listen_xml(call_id, "I did not hear anything. Could you try again?")
         return _xml(xml)
 
-    # Save the caller's speech to transcript
+    # Transcribe with Deepgram
+    speech_text = await transcribe_with_deepgram(recording_url)
+    logger.info("Call %s — Deepgram transcript: '%s'", call_id, speech_text)
+
+    if not speech_text:
+        xml = _listen_xml(call_id, "I could not understand that. Could you please repeat?")
+        return _xml(xml)
+
+    # Save to transcript
     async with get_db_conn() as db:
         call = await db.fetchrow("SELECT * FROM calls WHERE id=$1", call_id)
         if not call:
             return _xml("<Response><Speak>Call not found.</Speak></Response>")
 
-        # Parse existing transcript
         transcript = _parse_transcript(call.get("transcript"))
-
-        # Add caller's speech
         transcript.append({
             "role": "human",
-            "text": speech,
+            "text": speech_text,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
-
-        # Save
         await db.execute(
             "UPDATE calls SET transcript=$1 WHERE id=$2",
             json.dumps(transcript), call_id,
         )
 
-    # Dispatch webhook to agent — agent decides what to say next
+    # Dispatch to agent's webhook
     await dispatch_webhook(call["account_id"], call["agent_id"], {
         "event": "call.speech_received",
         "call_id": call_id,
         "provider_call_id": call_uuid or call.get("provider_call_id", ""),
-        "speech_text": speech,
+        "speech_text": speech_text,
         "direction": call.get("direction", "outbound"),
         "from_number": call.get("from_number", ""),
         "to_number": call.get("to_number", ""),
     })
 
-    # Now wait for agent to respond via POST /v1/calls/{id}/speak
-    # Use a Redirect loop to poll for the agent's response
+    # Enter wait loop for agent's response
     wait_url = f"{settings.base_url_clean}/plivo/wait/{call_id}"
-
     xml = f"""<Response>
     <Speak voice="Polly.Aditi">One moment please.</Speak>
     <Redirect method="POST">{wait_url}</Redirect>
 </Response>"""
 
-    logger.info("Call %s — waiting for agent response", call_id)
     return _xml(xml)
 
 
 # ────────────────────────────────────────────────────────────
 # Voice — Wait Loop
-# Polls for agent's response. When found, speaks it and
-# goes back to listening. If timeout, hangs up gracefully.
+# Polls for agent's response queued via POST /v1/calls/{id}/speak
 # ────────────────────────────────────────────────────────────
 
 @router.post("/wait/{call_id}")
 async def plivo_wait_for_response(request: Request, call_id: str):
-    """
-    Polling endpoint — checks if the agent has queued a response.
-    If yes: speak it and go back to listening.
-    If no: wait 3 seconds and check again (up to ~60 seconds total).
-    """
-    form = await request.form()
-
-    # Check for a queued response from the agent
+    """Check if agent has queued a response. If yes, speak + listen. If no, wait."""
     async with get_db_conn() as db:
+        # Check for queued response
         queued = await db.fetchrow(
             """SELECT id, response_text FROM call_responses
                WHERE call_id=$1 AND spoken=false
@@ -206,7 +224,6 @@ async def plivo_wait_for_response(request: Request, call_id: str):
         )
 
         if queued:
-            # Mark as spoken
             await db.execute(
                 "UPDATE call_responses SET spoken=true WHERE id=$1",
                 queued["id"],
@@ -228,37 +245,21 @@ async def plivo_wait_for_response(request: Request, call_id: str):
                 json.dumps(transcript), call_id,
             )
 
-            # Speak the response, then listen again
-            speech_url = f"{settings.base_url_clean}/plivo/speech/{call_id}"
-
-            xml = f"""<Response>
-    <Speak voice="Polly.Aditi">{_escape_xml(response_text)}</Speak>
-    <GetInput action="{speech_url}" method="POST"
-              inputType="speech"
-              speechEndTimeout="3" executionTimeout="30"
-              language="en-US" profanityFilter="false"
-              redirect="true" log="true">
-        <Speak voice="Polly.Aditi">I am listening.</Speak>
-    </GetInput>
-    <Speak voice="Polly.Aditi">Thank you for calling. Goodbye.</Speak>
-</Response>"""
+            # Speak response, then record again
+            xml = _listen_xml(call_id, response_text)
             return _xml(xml)
 
-        # Check if call is still active
-        call = await db.fetchrow(
-            "SELECT status FROM calls WHERE id=$1", call_id,
-        )
+        # Check if call still active
+        call = await db.fetchrow("SELECT status FROM calls WHERE id=$1", call_id)
         if not call or call["status"] == "completed":
             return _xml("<Response><Speak>Goodbye.</Speak></Response>")
 
-    # No response yet — wait 3 seconds then check again
+    # No response yet — wait 3 seconds and check again
     wait_url = f"{settings.base_url_clean}/plivo/wait/{call_id}"
-
     xml = f"""<Response>
     <Wait length="3"/>
     <Redirect method="POST">{wait_url}</Redirect>
 </Response>"""
-
     return _xml(xml)
 
 
@@ -268,31 +269,25 @@ async def plivo_wait_for_response(request: Request, call_id: str):
 
 @router.post("/hangup/{call_id}")
 async def plivo_hangup(request: Request, call_id: str):
-    """Called by Plivo when call ends."""
     form = await request.form()
     duration = form.get("Duration", "0")
     hangup_cause = form.get("HangupCause", "unknown")
-
     logger.info("Call %s ended — duration: %ss, cause: %s", call_id, duration, hangup_cause)
 
     async with get_db_conn() as db:
         call = await db.fetchrow("SELECT * FROM calls WHERE id=$1", call_id)
         await db.execute(
-            """UPDATE calls
-               SET status='completed', duration_seconds=$1, ended_at=now()
+            """UPDATE calls SET status='completed', duration_seconds=$1, ended_at=now()
                WHERE id=$2 AND status!='completed'""",
-            int(duration) if duration.isdigit() else 0,
-            call_id,
+            int(duration) if duration.isdigit() else 0, call_id,
         )
 
-    # Dispatch call completed webhook
     if call:
         await dispatch_webhook(call["account_id"], call["agent_id"], {
             "event": "call.completed",
             "call_id": call_id,
             "duration": int(duration) if duration.isdigit() else 0,
             "hangup_cause": hangup_cause,
-            "direction": call.get("direction", "unknown"),
         })
 
     return _xml("<Response/>")
@@ -300,15 +295,10 @@ async def plivo_hangup(request: Request, call_id: str):
 
 # ────────────────────────────────────────────────────────────
 # Voice — Inbound Call
-# When someone calls your Plivo number.
 # ────────────────────────────────────────────────────────────
 
 @router.post("/inbound")
 async def plivo_inbound_call(request: Request):
-    """
-    Handle inbound call. Look up number → agent, create call record,
-    speak greeting, start listening.
-    """
     form = await request.form()
     from_number = form.get("From", "")
     to_number = form.get("To", "")
@@ -327,7 +317,6 @@ async def plivo_inbound_call(request: Request):
             to_number, to_number.lstrip("+"),
         )
         if not number:
-            logger.warning("Inbound call to unknown number %s", to_number)
             return _xml("<Response><Hangup/></Response>")
 
         agent = await db.fetchrow("SELECT * FROM agents WHERE id=$1", number["agent_id"])
@@ -347,21 +336,6 @@ async def plivo_inbound_call(request: Request):
     if agent and agent.get("initial_greeting"):
         greeting = agent["initial_greeting"]
 
-    speech_url = f"{settings.base_url_clean}/plivo/speech/{call_id}"
-
-    xml = f"""<Response>
-    <Speak voice="Polly.Aditi">{_escape_xml(greeting)}</Speak>
-    <GetInput action="{speech_url}" method="POST"
-              inputType="speech"
-              speechEndTimeout="3" executionTimeout="30"
-              language="en-US" profanityFilter="false"
-              redirect="true" log="true">
-        <Speak voice="Polly.Aditi">I am listening.</Speak>
-    </GetInput>
-    <Speak voice="Polly.Aditi">I did not hear anything. Goodbye.</Speak>
-</Response>"""
-
-    # Dispatch inbound call webhook
     if number:
         await dispatch_webhook(number["account_id"], number["agent_id"], {
             "event": "call.inbound",
@@ -370,6 +344,7 @@ async def plivo_inbound_call(request: Request):
             "to_number": to_number,
         })
 
+    xml = _listen_xml(call_id, greeting)
     return _xml(xml)
 
 
@@ -379,9 +354,7 @@ async def plivo_inbound_call(request: Request):
 
 @router.post("/sms")
 async def plivo_sms_webhook(request: Request):
-    """Receive inbound SMS and dispatch to customer webhook."""
     form = await request.form()
-
     from_number = form.get("From", "")
     to_number = form.get("To", "")
     text = form.get("Text", "")
@@ -401,7 +374,6 @@ async def plivo_sms_webhook(request: Request):
             to_number, to_number.lstrip("+"),
         )
         if not number:
-            logger.warning("SMS to unknown number %s", to_number)
             return {"status": "unknown_number"}
 
         conv = await db.fetchrow(
@@ -449,7 +421,6 @@ async def plivo_sms_webhook(request: Request):
 # ────────────────────────────────────────────────────────────
 
 def _parse_transcript(raw) -> list:
-    """Safely parse transcript JSON from DB."""
     if not raw:
         return []
     if isinstance(raw, list):
