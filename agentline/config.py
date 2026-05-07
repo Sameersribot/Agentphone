@@ -21,7 +21,6 @@ class Settings(BaseSettings):
     # Plivo
     PLIVO_AUTH_ID: str = ""
     PLIVO_AUTH_TOKEN: str = ""
-    PLIVO_APP_ID: str = ""  # Plivo Application ID for voice
 
     # Voice Pipeline
     DEEPGRAM_API_KEY: str = ""

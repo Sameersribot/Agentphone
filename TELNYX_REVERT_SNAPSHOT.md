@@ -11,7 +11,7 @@
 | Area | Telnyx | Plivo |
 |------|--------|-------|
 | SDK | `telnyx>=2.0.0` (async native) | `plivo>=4.0.0` (sync, wrapped in `run_in_executor`) |
-| Env Vars | `TELNYX_API_KEY`, `TELNYX_PUBLIC_KEY`, `TELNYX_CONNECTION_ID`, `TELNYX_MESSAGING_PROFILE_ID` | `PLIVO_AUTH_ID`, `PLIVO_AUTH_TOKEN`, `PLIVO_APP_ID` |
+| Env Vars | `TELNYX_API_KEY`, `TELNYX_PUBLIC_KEY`, `TELNYX_CONNECTION_ID`, `TELNYX_MESSAGING_PROFILE_ID` | `PLIVO_AUTH_ID`, `PLIVO_AUTH_TOKEN` |
 | Number Provisioning | `client.available_phone_numbers.list()` → `client.number_orders.create()` | `client.numbers.search()` → `client.numbers.buy()` |
 | Number Release | `client.phone_numbers.delete(telnyx_id)` | `client.numbers.delete(number=phone_number)` |
 | SMS | `client.messages.send()` with `messaging_profile_id` | `client.messages.create()` with `src`/`dst`/`text` |

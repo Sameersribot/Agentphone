@@ -63,8 +63,6 @@ async def provision_number(
 
     # Buy the number and attach to our Plivo application
     buy_params = {"number": chosen_number}
-    if settings.PLIVO_APP_ID:
-        buy_params["app_id"] = settings.PLIVO_APP_ID
 
     await _run_sync(client.numbers.buy, **buy_params)
 
