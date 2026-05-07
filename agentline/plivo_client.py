@@ -1,7 +1,13 @@
 """
 AgentLine — Plivo Client
-Wraps Plivo SDK for number provisioning, SMS, and call initiation.
-Plivo's SDK is synchronous — we use run_in_executor for async compatibility.
+Wraps Plivo Python SDK v4+ for number provisioning, SMS, and voice calls.
+
+Plivo SDK is synchronous — all methods use run_in_executor for async FastAPI.
+
+API Reference:
+  Numbers: https://www.plivo.com/docs/numbers/api/phone-number
+  Calls:   https://www.plivo.com/docs/voice/api/calls
+  SMS:     https://www.plivo.com/docs/messaging/api/message
 """
 
 import asyncio
@@ -13,74 +19,139 @@ from agentline.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Plivo SDK is synchronous — share a single RestClient and executor
-client = plivo.RestClient(settings.PLIVO_AUTH_ID, settings.PLIVO_AUTH_TOKEN)
+# Lazy client + thread pool
+_client = None
 _executor = ThreadPoolExecutor(max_workers=4)
 
 
-def _run_sync(func, *args, **kwargs):
-    """Helper: run a blocking Plivo SDK call on the thread-pool executor."""
+def _get_client():
+    """Lazy-init the Plivo RestClient (avoids import-time env errors)."""
+    global _client
+    if _client is None:
+        if not settings.PLIVO_AUTH_ID or not settings.PLIVO_AUTH_TOKEN:
+            raise RuntimeError("PLIVO_AUTH_ID and PLIVO_AUTH_TOKEN must be set.")
+        _client = plivo.RestClient(settings.PLIVO_AUTH_ID, settings.PLIVO_AUTH_TOKEN)
+    return _client
+
+
+async def _run(func, *args, **kwargs):
+    """Run a blocking Plivo SDK call on the thread-pool."""
     loop = asyncio.get_event_loop()
-    return loop.run_in_executor(_executor, lambda: func(*args, **kwargs))
+    return await loop.run_in_executor(_executor, lambda: func(*args, **kwargs))
 
 
 # ────────────────────────────────────────────────────────────
 # Number Provisioning
+# Plivo docs: GET /v1/Account/{auth_id}/PhoneNumber/ → search
+#              POST /v1/Account/{auth_id}/PhoneNumber/{number}/ → buy
 # ────────────────────────────────────────────────────────────
 
 async def provision_number(
-    country: str = "US",
-    area_code: str | None = None,
+    country: str = "IN",
+    number_type: str = "local",
+    pattern: str | None = None,
     agent_id: str | None = None,
 ) -> dict:
     """
-    Search for and purchase a phone number from Plivo.
-    Returns dict with phone_number (E.164) and provider_id.
+    Search for and buy a phone number from Plivo's inventory.
+
+    Args:
+        country:     ISO-2 country code (default 'IN' for India)
+        number_type: 'local', 'mobile', 'tollfree', 'fixed', 'national'
+        pattern:     Area code or prefix filter (e.g. '22' for Mumbai)
+        agent_id:    Our internal agent_id (unused by Plivo, for logging)
+
+    Returns: {"phone_number": "+91...", "provider_id": "91..."}
     """
-    search_params = {
+    # Step 1: Search available numbers
+    search_kwargs = {
         "country_iso": country,
-        "type": "local",
-        "services": "voice,sms",
-        "limit": 1,
+        "type": number_type,
+        "limit": 5,
     }
-    if area_code:
-        search_params["pattern"] = area_code
+    if pattern:
+        search_kwargs["pattern"] = pattern
 
-    results = await _run_sync(client.numbers.search, **search_params)
+    logger.info("Searching Plivo numbers: %s", search_kwargs)
 
-    # results is a tuple (status_code, response_object)
-    numbers_list = results[1] if isinstance(results, tuple) else results
-    if hasattr(numbers_list, "objects"):
-        numbers_list = numbers_list.objects
-    elif isinstance(numbers_list, dict):
-        numbers_list = numbers_list.get("objects", [])
+    try:
+        response = await _run(_get_client().numbers.search, **search_kwargs)
+    except plivo.exceptions.PlivoRestError as e:
+        raise Exception(f"Plivo number search failed: {e}")
+
+    # response is a list-like of PhoneNumber objects
+    # Convert to list if needed
+    numbers_list = list(response) if response else []
 
     if not numbers_list:
-        raise Exception(f"No numbers available in {country} {area_code or ''}")
+        raise Exception(
+            f"No {number_type} numbers available in {country}. "
+            f"Check Plivo console for available inventory or KYC compliance."
+        )
 
-    chosen_obj = numbers_list[0]
-    chosen_number = chosen_obj.number if hasattr(chosen_obj, "number") else chosen_obj.get("number", "")
+    # Pick the first available number
+    chosen = numbers_list[0]
+    number_str = chosen.number if hasattr(chosen, "number") else str(chosen)
 
-    # Buy the number and attach to our Plivo application
-    buy_params = {"number": chosen_number}
+    logger.info("Found number: %s — buying...", number_str)
 
-    await _run_sync(client.numbers.buy, **buy_params)
+    # Step 2: Buy the number
+    # Plivo API: POST /v1/Account/{auth_id}/PhoneNumber/{number}/
+    try:
+        await _run(_get_client().numbers.buy, number=number_str)
+    except plivo.exceptions.PlivoRestError as e:
+        raise Exception(f"Failed to buy number {number_str}: {e}")
+
+    # Format as E.164
+    phone_e164 = f"+{number_str}" if not number_str.startswith("+") else number_str
+
+    logger.info("Successfully provisioned: %s", phone_e164)
 
     return {
-        "phone_number": f"+{chosen_number}" if not chosen_number.startswith("+") else chosen_number,
-        "provider_id": chosen_number,  # Plivo uses the number itself as the identifier
+        "phone_number": phone_e164,
+        "provider_id": number_str,  # Plivo uses the raw number as ID
     }
 
 
 async def release_number(provider_id: str):
-    """Release (unrent) a phone number from Plivo."""
-    # provider_id for Plivo is the phone number itself (without +)
+    """
+    Unrent a number from your Plivo account.
+    Plivo API: DELETE /v1/Account/{auth_id}/Number/{number}/
+    """
     number = provider_id.lstrip("+")
-    await _run_sync(client.numbers.delete, number=number)
+    try:
+        await _run(_get_client().numbers.delete, number=number)
+        logger.info("Released number: %s", number)
+    except plivo.exceptions.PlivoRestError as e:
+        logger.warning("Failed to release number %s: %s", number, e)
+
+
+async def list_plivo_numbers() -> list[dict]:
+    """
+    List all numbers currently rented on this Plivo account.
+    Useful for debugging or manual attachment.
+    """
+    try:
+        response = await _run(_get_client().numbers.list, limit=100)
+        numbers = list(response) if response else []
+        return [
+            {
+                "number": n.number if hasattr(n, "number") else str(n),
+                "type": getattr(n, "number_type", "unknown"),
+                "voice_enabled": getattr(n, "voice_enabled", False),
+                "sms_enabled": getattr(n, "sms_enabled", False),
+            }
+            for n in numbers
+        ]
+    except Exception as e:
+        logger.error("Failed to list Plivo numbers: %s", e)
+        return []
 
 
 # ────────────────────────────────────────────────────────────
 # SMS
+# Plivo API: POST /v1/Account/{auth_id}/Message/
+# Required: src, dst, text
 # ────────────────────────────────────────────────────────────
 
 async def send_sms(
@@ -89,27 +160,41 @@ async def send_sms(
     body: str,
     media_url: str | None = None,
 ) -> dict:
-    """Send an SMS/MMS via Plivo."""
+    """
+    Send an SMS or MMS message via Plivo.
+
+    Args:
+        from_number: Plivo-rented number (E.164)
+        to_number:   Destination number (E.164)
+        body:        Message text
+        media_url:   Optional media URL for MMS
+
+    Returns: {"provider_message_id": "uuid", "status": "queued"}
+    """
     params = {
-        "src": from_number,
-        "dst": to_number,
+        "src": from_number.lstrip("+"),
+        "dst": to_number.lstrip("+"),
         "text": body,
     }
     if media_url:
         params["media_urls"] = [media_url]
-        params["type_"] = "mms"
+        params["type"] = "mms"
 
-    result = await _run_sync(client.messages.create, **params)
+    try:
+        response = await _run(_get_client().messages.create, **params)
+    except plivo.exceptions.PlivoRestError as e:
+        raise Exception(f"Plivo SMS failed: {e}")
 
-    # result is a tuple (status_code, response) or an object
-    response = result[1] if isinstance(result, tuple) else result
+    # Response has message_uuid (list) and api_id
     message_uuid = ""
     if hasattr(response, "message_uuid"):
-        msg_uuids = response.message_uuid
-        message_uuid = msg_uuids[0] if isinstance(msg_uuids, list) else msg_uuids
-    elif isinstance(response, dict):
-        msg_uuids = response.get("message_uuid", [])
-        message_uuid = msg_uuids[0] if isinstance(msg_uuids, list) else msg_uuids
+        uuids = response.message_uuid
+        message_uuid = uuids[0] if isinstance(uuids, list) else str(uuids)
+    elif isinstance(response, tuple) and len(response) > 1:
+        resp = response[1]
+        if hasattr(resp, "message_uuid"):
+            uuids = resp.message_uuid
+            message_uuid = uuids[0] if isinstance(uuids, list) else str(uuids)
 
     return {
         "provider_message_id": message_uuid or "unknown",
@@ -119,6 +204,8 @@ async def send_sms(
 
 # ────────────────────────────────────────────────────────────
 # Outbound Calls
+# Plivo API: POST /v1/Account/{auth_id}/Call/
+# Required: from_, to_, answer_url, answer_method
 # ────────────────────────────────────────────────────────────
 
 async def initiate_call(
@@ -127,30 +214,41 @@ async def initiate_call(
     call_id: str,
 ) -> str:
     """
-    Place an outbound call via Plivo.
-    call_id is our internal ID, appended to the answer_url for webhook correlation.
-    Returns the Plivo request_uuid (call identifier).
+    Place an outbound voice call via Plivo.
+
+    When the callee answers, Plivo will POST to our answer_url which returns
+    XML with a <Stream bidirectional> element to start the voice pipeline.
+
+    Args:
+        from_number: Plivo-rented number (E.164)
+        to_number:   Destination number (E.164)
+        call_id:     Our internal call ID — embedded in the answer_url path
+
+    Returns: Plivo request_uuid (call identifier)
     """
-    # answer_url tells Plivo what XML to fetch when the call is answered
     answer_url = f"{settings.BASE_URL}/plivo/answer/{call_id}"
     hangup_url = f"{settings.BASE_URL}/plivo/hangup/{call_id}"
 
-    result = await _run_sync(
-        client.calls.create,
-        from_=from_number,
-        to_=to_number,
-        answer_url=answer_url,
-        answer_method="POST",
-        hangup_url=hangup_url,
-        hangup_method="POST",
-    )
+    try:
+        response = await _run(
+            _get_client().calls.create,
+            from_=from_number.lstrip("+"),
+            to_=to_number.lstrip("+"),
+            answer_url=answer_url,
+            answer_method="POST",
+            hangup_url=hangup_url,
+            hangup_method="POST",
+        )
+    except plivo.exceptions.PlivoRestError as e:
+        raise Exception(f"Plivo call failed: {e}")
 
-    # result is a tuple (status_code, response)
-    response = result[1] if isinstance(result, tuple) else result
+    # Response has request_uuid
     request_uuid = ""
     if hasattr(response, "request_uuid"):
         request_uuid = response.request_uuid
-    elif isinstance(response, dict):
-        request_uuid = response.get("request_uuid", "unknown")
+    elif isinstance(response, tuple) and len(response) > 1:
+        resp = response[1]
+        request_uuid = getattr(resp, "request_uuid", "") or ""
 
+    logger.info("Outbound call initiated: %s → %s (uuid: %s)", from_number, to_number, request_uuid)
     return request_uuid or "unknown"

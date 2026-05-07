@@ -107,9 +107,9 @@ async def verify(body: VerifyRequest, db=Depends(get_db)):
         agent_name,
     )
 
-    # --- Provision US phone number via Plivo ---
+    # --- Provision Indian phone number via Plivo ---
     try:
-        number_data = await provision_number(country="US", agent_id=agent_id)
+        number_data = await provision_number(country="IN", agent_id=agent_id)
     except Exception:
         number_data = None
 
@@ -119,8 +119,8 @@ async def verify(body: VerifyRequest, db=Depends(get_db)):
         number_id = f"num_{secrets.token_urlsafe(12)}"
         phone_number = number_data["phone_number"]
         await db.execute(
-            """INSERT INTO phone_numbers (id, account_id, agent_id, provider_id, phone_number)
-               VALUES ($1, $2, $3, $4, $5)""",
+            """INSERT INTO phone_numbers (id, account_id, agent_id, provider_id, phone_number, country)
+               VALUES ($1, $2, $3, $4, $5, 'IN')""",
             number_id,
             account_id,
             agent_id,
