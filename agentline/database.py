@@ -32,6 +32,24 @@ async def init_db():
         async with _pool.acquire() as conn:
             await conn.fetchval("SELECT 1")
         logger.info("Database connected successfully")
+
+        # Auto-create call_responses table (required for /speak → wait loop relay)
+        async with _pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS call_responses (
+                    id SERIAL PRIMARY KEY,
+                    call_id TEXT REFERENCES calls(id) ON DELETE CASCADE,
+                    response_text TEXT NOT NULL,
+                    spoken BOOLEAN DEFAULT false,
+                    created_at TIMESTAMPTZ DEFAULT now()
+                )
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_call_responses_pending
+                ON call_responses (call_id, spoken)
+                WHERE spoken = false
+            """)
+            logger.info("call_responses table verified")
     except Exception as e:
         logger.error("Database connection failed: %s", e)
         logger.warning("Server starting WITHOUT database — fix DATABASE_URL in .env")

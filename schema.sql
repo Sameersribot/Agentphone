@@ -103,6 +103,16 @@ CREATE TABLE webhooks (
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
+-- Agent response queue: text that agents POST via /v1/calls/{id}/speak
+-- gets spoken on the active call by the Plivo wait loop.
+CREATE TABLE IF NOT EXISTS call_responses (
+    id SERIAL PRIMARY KEY,
+    call_id TEXT REFERENCES calls(id) ON DELETE CASCADE,
+    response_text TEXT NOT NULL,
+    spoken BOOLEAN DEFAULT false,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
 
 -- Performance indexes
 CREATE INDEX idx_api_keys_prefix ON api_keys(key_prefix) WHERE revoked_at IS NULL;

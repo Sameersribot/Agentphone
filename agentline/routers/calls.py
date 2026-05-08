@@ -184,7 +184,6 @@ async def listen_from_call(
     wait: bool = Query(False, description="Long-poll: hold connection until new speech arrives (max 25s)"),
     after: int = Query(0, description="Only return transcript entries after this index"),
     account=Depends(get_current_account),
-    db=Depends(get_db),
 ):
     """
     Get speech from the caller on an active call.
@@ -198,11 +197,12 @@ async def listen_from_call(
     Use `?after=N` to only get transcript entries after index N,
     so you don't re-process old messages.
     """
-    # Verify ownership
-    call = await db.fetchrow(
-        "SELECT transcript, status FROM calls WHERE id=$1 AND account_id=$2",
-        call_id, account["id"],
-    )
+    # Fetch current state (quick query, releases connection immediately)
+    async with get_db_conn() as db:
+        call = await db.fetchrow(
+            "SELECT transcript, status FROM calls WHERE id=$1 AND account_id=$2",
+            call_id, account["id"],
+        )
     if not call:
         raise HTTPException(404, "Call not found.")
 

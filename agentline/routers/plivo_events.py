@@ -15,6 +15,7 @@ Flow:
   8. <Speak> the response → <Record> again → loop
 """
 
+import asyncio
 import secrets
 import json
 import logging
@@ -185,21 +186,17 @@ async def plivo_recording_callback(request: Request, call_id: str):
             json.dumps(transcript), call_id,
         )
 
-    # Dispatch to agent's webhook
-    await dispatch_webhook(call["account_id"], call["agent_id"], {
-        "event": "call.speech_received",
-        "call_id": call_id,
-        "provider_call_id": call_uuid or call.get("provider_call_id", ""),
-        "speech_text": speech_text,
-        "direction": call.get("direction", "outbound"),
-        "from_number": call.get("from_number", ""),
-        "to_number": call.get("to_number", ""),
-    })
+    # Dispatch to agent's webhook — fire-and-forget so we don't delay Plivo XML
+    asyncio.create_task(_dispatch_speech_webhook(
+        call["account_id"], call["agent_id"],
+        call_id, call_uuid or call.get("provider_call_id", ""),
+        speech_text, call,
+    ))
 
-    # Enter wait loop for agent's response
+    # Enter wait loop for agent's response (silent — no annoying "one moment" repeat)
     wait_url = f"{settings.base_url_clean}/plivo/wait/{call_id}"
     xml = f"""<Response>
-    <Speak voice="Polly.Aditi">One moment please.</Speak>
+    <Wait length="2"/>
     <Redirect method="POST">{wait_url}</Redirect>
 </Response>"""
 
@@ -254,10 +251,10 @@ async def plivo_wait_for_response(request: Request, call_id: str):
         if not call or call["status"] == "completed":
             return _xml("<Response><Speak>Goodbye.</Speak></Response>")
 
-    # No response yet — wait 3 seconds and check again
+    # No response yet — wait 2 seconds and check again (silent hold)
     wait_url = f"{settings.base_url_clean}/plivo/wait/{call_id}"
     xml = f"""<Response>
-    <Wait length="3"/>
+    <Wait length="2"/>
     <Redirect method="POST">{wait_url}</Redirect>
 </Response>"""
     return _xml(xml)
@@ -414,6 +411,33 @@ async def plivo_sms_webhook(request: Request):
     })
 
     return _xml("<Response/>")
+
+
+# ────────────────────────────────────────────────────────────
+# Async Helpers
+# ────────────────────────────────────────────────────────────
+
+async def _dispatch_speech_webhook(
+    account_id: str,
+    agent_id: str,
+    call_id: str,
+    provider_call_id: str,
+    speech_text: str,
+    call: dict,
+):
+    """Fire-and-forget webhook dispatch — runs in background so Plivo gets XML instantly."""
+    try:
+        await dispatch_webhook(account_id, agent_id, {
+            "event": "call.speech_received",
+            "call_id": call_id,
+            "provider_call_id": provider_call_id,
+            "speech_text": speech_text,
+            "direction": call.get("direction", "outbound"),
+            "from_number": call.get("from_number", ""),
+            "to_number": call.get("to_number", ""),
+        })
+    except Exception as e:
+        logger.error("Background webhook dispatch failed for call %s: %s", call_id, e)
 
 
 # ────────────────────────────────────────────────────────────
