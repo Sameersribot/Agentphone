@@ -72,8 +72,12 @@ async def create_call(
         number["phone_number"], body.to_number, system_prompt, now,
     )
 
+    # Route based on the SOURCE number's provider (country stored at provision time)
+    # A SignalWire-owned number must use SignalWire to place calls, and vice versa.
+    use_signalwire = number["country"] == "US"
+
     try:
-        if body.to_number.startswith("+1"):
+        if use_signalwire:
             provider_call_id = await signalwire_initiate_call(
                 from_number=number["phone_number"],
                 to_number=body.to_number,
@@ -158,8 +162,8 @@ async def speak_on_call(
     """
     Send text to be spoken on an active call.
     
-    The Plivo wait loop will pick this up within ~3 seconds
-    and speak it to the person on the phone.
+    The provider's wait loop (Plivo or SignalWire) will pick this up
+    within ~3 seconds and speak it to the person on the phone.
     
     Body: {"text": "Sure, I can help you with that."}
     """

@@ -40,6 +40,8 @@ async def initiate_call(
         "To": to_number,
         "Url": answer_url,
         "Method": "POST",
+        "StatusCallback": f"{settings.base_url_clean}/signalwire/hangup/{call_id}",
+        "StatusCallbackMethod": "POST",
     }
 
     try:

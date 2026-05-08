@@ -295,3 +295,94 @@ async def signalwire_sms_webhook(request: Request):
     })
 
     return _xml("<Response/>")
+
+
+# ────────────────────────────────────────────────────────────
+# Voice — Hangup (StatusCallback)
+# ────────────────────────────────────────────────────────────
+
+@router.post("/hangup/{call_id}")
+async def signalwire_hangup(request: Request, call_id: str):
+    """SignalWire POSTs here when the call ends (StatusCallback)."""
+    form = await request.form()
+    call_status = form.get("CallStatus", "")
+    duration = form.get("CallDuration", form.get("Duration", "0"))
+    call_sid = form.get("CallSid", "")
+
+    logger.info("Call %s status=%s duration=%ss (SID: %s)", call_id, call_status, duration, call_sid)
+
+    # Only act on terminal states
+    if call_status in ("completed", "failed", "busy", "no-answer", "canceled"):
+        async with get_db_conn() as db:
+            call = await db.fetchrow("SELECT * FROM calls WHERE id=$1", call_id)
+            await db.execute(
+                """UPDATE calls SET status='completed', duration_seconds=$1, ended_at=now()
+                   WHERE id=$2 AND status!='completed'""",
+                int(duration) if str(duration).isdigit() else 0, call_id,
+            )
+
+        if call:
+            await dispatch_webhook(call["account_id"], call["agent_id"], {
+                "event": "call.completed",
+                "call_id": call_id,
+                "duration": int(duration) if str(duration).isdigit() else 0,
+                "hangup_cause": call_status,
+            })
+
+    return _xml("<Response/>")
+
+
+# ────────────────────────────────────────────────────────────
+# Voice — Inbound Call on a SignalWire US number
+# ────────────────────────────────────────────────────────────
+
+@router.post("/inbound")
+async def signalwire_inbound_call(request: Request):
+    """Handle incoming calls on SignalWire US numbers."""
+    form = await request.form()
+    from_number = form.get("From", "")
+    to_number = form.get("To", "")
+    call_sid = form.get("CallSid", "")
+
+    if from_number and not from_number.startswith("+"):
+        from_number = f"+{from_number}"
+    if to_number and not to_number.startswith("+"):
+        to_number = f"+{to_number}"
+
+    logger.info("Inbound call (SignalWire): %s -> %s (SID: %s)", from_number, to_number, call_sid)
+
+    async with get_db_conn() as db:
+        number = await db.fetchrow(
+            "SELECT * FROM phone_numbers WHERE (phone_number=$1 OR phone_number=$2) AND status='active'",
+            to_number, to_number.lstrip("+"),
+        )
+        if not number:
+            return _xml("<Response><Say>This number is not configured. Goodbye.</Say></Response>")
+
+        agent = await db.fetchrow("SELECT * FROM agents WHERE id=$1", number["agent_id"])
+
+        call_id = f"call_{secrets.token_urlsafe(12)}"
+        await db.execute(
+            """INSERT INTO calls
+               (id, account_id, agent_id, number_id, provider_call_id,
+                direction, from_number, to_number, system_prompt, status, started_at)
+               VALUES ($1,$2,$3,$4,$5,'inbound',$6,$7,$8,'in-progress',now())""",
+            call_id, number["account_id"], number["agent_id"], number["id"],
+            call_sid, from_number, to_number,
+            agent["system_prompt"] if agent else "",
+        )
+
+    greeting = "Hello, how can I help you today?"
+    if agent and agent.get("initial_greeting"):
+        greeting = agent["initial_greeting"]
+
+    if number:
+        await dispatch_webhook(number["account_id"], number["agent_id"], {
+            "event": "call.inbound",
+            "call_id": call_id,
+            "from_number": from_number,
+            "to_number": to_number,
+        })
+
+    xml = _listen_xml(call_id, greeting)
+    return _xml(xml)

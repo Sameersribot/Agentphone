@@ -76,9 +76,10 @@ async def send_message(
             conv_id,
         )
 
-    # Send via Plivo or SignalWire based on number prefix
+    # Send via the provider that owns the from_number
+    use_signalwire = number["country"] == "US"
     try:
-        if body.to_number.startswith("+1"):
+        if use_signalwire:
             result = await signalwire_send_sms(
                 from_number=number["phone_number"],
                 to_number=body.to_number,

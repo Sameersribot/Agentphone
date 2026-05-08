@@ -70,7 +70,7 @@ async def root():
         "service": "AgentLine",
         "version": "0.2.0",
         "status": "operational",
-        "telephony_provider": "plivo",
+        "telephony_providers": ["plivo", "signalwire"],
     }
 
 
@@ -89,12 +89,25 @@ async def health():
 
 @app.get("/debug/urls", tags=["Health"])
 async def debug_urls():
-    """Show the callback URLs that Plivo will receive — useful for debugging."""
+    """Show the callback URLs that providers will receive — useful for debugging."""
     from agentline.config import settings
     return {
         "base_url_raw": settings.BASE_URL,
         "base_url_clean": settings.base_url_clean,
-        "example_answer_url": f"{settings.base_url_clean}/plivo/answer/call_TEST",
-        "example_speech_url": f"{settings.base_url_clean}/plivo/speech/call_TEST",
-        "example_hangup_url": f"{settings.base_url_clean}/plivo/hangup/call_TEST",
+        "plivo": {
+            "answer_url": f"{settings.base_url_clean}/plivo/answer/call_TEST",
+            "record_url": f"{settings.base_url_clean}/plivo/recorded/call_TEST",
+            "wait_url": f"{settings.base_url_clean}/plivo/wait/call_TEST",
+            "hangup_url": f"{settings.base_url_clean}/plivo/hangup/call_TEST",
+            "inbound_url": f"{settings.base_url_clean}/plivo/inbound",
+            "sms_url": f"{settings.base_url_clean}/plivo/sms",
+        },
+        "signalwire": {
+            "answer_url": f"{settings.base_url_clean}/signalwire/answer/call_TEST",
+            "record_url": f"{settings.base_url_clean}/signalwire/recorded/call_TEST",
+            "wait_url": f"{settings.base_url_clean}/signalwire/wait/call_TEST",
+            "hangup_url": f"{settings.base_url_clean}/signalwire/hangup/call_TEST",
+            "inbound_url": f"{settings.base_url_clean}/signalwire/inbound",
+            "sms_url": f"{settings.base_url_clean}/signalwire/sms",
+        },
     }
