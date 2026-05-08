@@ -31,9 +31,6 @@ async def initiate_call(
     XML with a <Response> element to start the voice pipeline.
     """
     answer_url = f"{settings.base_url_clean}/signalwire/answer/{call_id}"
-    
-    # We can also add status callback for hangup if needed
-    # status_callback = f"{settings.base_url_clean}/signalwire/status/{call_id}"
 
     data = {
         "From": from_number,
@@ -44,8 +41,13 @@ async def initiate_call(
         "StatusCallbackMethod": "POST",
     }
 
+    logger.info(
+        "SignalWire call request: from=%s to=%s answer_url=%s",
+        from_number, to_number, answer_url,
+    )
+
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.post(
                 f"{_get_base_url()}/Calls.json",
                 auth=_get_auth(),
@@ -57,9 +59,20 @@ async def initiate_call(
             logger.info("Outbound call initiated via SignalWire: %s → %s (sid: %s)", from_number, to_number, request_uuid)
             return request_uuid
     except httpx.HTTPStatusError as e:
-        logger.error(f"SignalWire call failed: {e.response.text}")
-        raise Exception(f"SignalWire call failed: {e.response.text}")
+        error_body = e.response.text
+        logger.error("SignalWire call failed (HTTP %s): %s", e.response.status_code, error_body)
+        # Provide actionable hints for common errors
+        hint = ""
+        lower_err = error_body.lower()
+        if "international" in lower_err or "permission" in lower_err or "geo" in lower_err:
+            hint = " Enable international calling in SignalWire Dashboard → Settings → Permissions."
+        elif "not verified" in lower_err or "unverified" in lower_err:
+            hint = " Verify your caller ID in SignalWire Dashboard → Phone Numbers."
+        elif "trial" in lower_err:
+            hint = " Upgrade your SignalWire account from trial to enable outbound calls."
+        raise Exception(f"SignalWire call failed: {error_body}{hint}")
     except Exception as e:
+        logger.error("SignalWire call failed (non-HTTP): %s", e)
         raise Exception(f"SignalWire call failed: {e}")
 
 async def send_sms(
