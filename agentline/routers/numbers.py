@@ -1,7 +1,7 @@
 """
 AgentLine — Numbers Router
 Phone number provisioning, listing, attachment, and release.
-Uses Plivo's Phone Numbers API.
+Uses Plivo (IN) and SignalWire (US) for multi-provider number management.
 """
 
 import secrets
@@ -27,14 +27,15 @@ async def provision(
     db=Depends(get_db),
 ):
     """
-    Search for and buy a phone number from Plivo, then attach it to an agent.
+    Search for and buy a phone number, then attach it to an agent.
+    Routes to SignalWire for US numbers, Plivo for all others.
     Each agent can only have ONE active number.
 
     Request body:
       - agent_id: str (required)
-      - country: str (default "IN")
+      - country: str (default "IN") — use "US" for US numbers via SignalWire
       - number_type: "local" | "mobile" | "tollfree" | "fixed" | "national"
-      - pattern: optional area code filter (e.g. "22" for Mumbai)
+      - pattern: optional area code filter (e.g. "22" for Mumbai, "212" for NYC)
     """
     # Verify agent belongs to this account
     agent = await db.fetchrow(
@@ -103,7 +104,7 @@ async def provision(
         )
     except Exception as e:
         logger.error(
-            "DB INSERT failed for number %s: %s — number was bought on Plivo but NOT saved!",
+            "DB INSERT failed for number %s: %s — number was bought but NOT saved!",
             number_data["phone_number"], e,
         )
         # Try to release the number we just bought since DB save failed
@@ -114,9 +115,10 @@ async def provision(
                 await plivo_release_number(number_data["provider_id"])
         except Exception:
             pass
+        provider_name = "SignalWire" if body.country.upper() == "US" else "Plivo"
         raise HTTPException(
             500,
-            f"Number {number_data['phone_number']} was provisioned on Plivo but failed to save to database: {e}. "
+            f"Number {number_data['phone_number']} was provisioned on {provider_name} but failed to save to database: {e}. "
             "The number has been released. Please try again.",
         )
 
@@ -188,12 +190,12 @@ async def attach_existing_number(
     db=Depends(get_db),
 ):
     """
-    Manually attach a number that was bought directly from Plivo Console.
+    Manually attach a number that was bought directly from Plivo or SignalWire dashboard.
     Use this when auto-provisioning fails due to KYC or inventory issues.
     Each agent can only have ONE active number.
 
     Query params:
-      - phone_number: E.164 format (e.g. "+919876543210")
+      - phone_number: E.164 format (e.g. "+919876543210" or "+12125551234")
       - agent_id: agent to attach to
     """
     agent = await db.fetchrow(
@@ -249,7 +251,7 @@ async def attach_existing_number(
         "agent_id": agent_id,
         "phone_number": phone_number,
         "status": "active",
-        "message": "Number attached. Configure its Answer URL in Plivo Console to point to your server.",
+        "message": f"Number attached. Configure its Answer URL in {'SignalWire' if phone_number.startswith('+1') else 'Plivo'} dashboard to point to your server.",
     }
 
 
@@ -303,7 +305,7 @@ async def release(
     account=Depends(get_current_account),
     db=Depends(get_db),
 ):
-    """Release a phone number back to Plivo."""
+    """Release a phone number back to its provider (Plivo or SignalWire)."""
     row = await db.fetchrow(
         "SELECT * FROM phone_numbers WHERE id = $1 AND account_id = $2",
         number_id,

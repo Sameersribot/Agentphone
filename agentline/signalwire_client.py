@@ -129,16 +129,16 @@ async def provision_number(
 
             # 2. Buy
             buy_url = f"{_get_base_url()}/IncomingPhoneNumbers.json"
-            buy_data = {"PhoneNumber": chosen_number}
-            buy_resp = await client.post(buy_url, auth=_get_auth(), data=buy_data)
+            buy_payload = {"PhoneNumber": chosen_number}
+            buy_resp = await client.post(buy_url, auth=_get_auth(), data=buy_payload)
             buy_resp.raise_for_status()
-            buy_data = buy_resp.json()
+            buy_result = buy_resp.json()
 
             logger.info("Successfully provisioned via SignalWire: %s", chosen_number)
 
             return {
                 "phone_number": chosen_number,
-                "provider_id": buy_data.get("sid"),
+                "provider_id": buy_result.get("sid"),
             }
     except httpx.HTTPStatusError as e:
         raise Exception(f"SignalWire number provision failed: {e.response.text}")
