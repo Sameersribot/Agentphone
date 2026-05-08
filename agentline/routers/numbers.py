@@ -12,7 +12,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from agentline.auth_middleware import get_current_account
 from agentline.database import get_db
 from agentline.models.number import NumberProvision, NumberOut
-from agentline.plivo_client import provision_number, release_number, list_plivo_numbers
+from agentline.plivo_client import provision_number as plivo_provision_number, release_number as plivo_release_number, list_plivo_numbers
+from agentline.signalwire_client import provision_number as signalwire_provision_number, release_number as signalwire_release_number
 
 logger = logging.getLogger(__name__)
 
@@ -56,14 +57,22 @@ async def provision(
             "Release it first with DELETE /v1/numbers/{number_id} before provisioning a new one.",
         )
 
-    # Provision via Plivo
+    # Provision via Plivo or SignalWire
     try:
-        number_data = await provision_number(
-            country=body.country,
-            number_type=body.number_type,
-            pattern=body.pattern,
-            agent_id=body.agent_id,
-        )
+        if body.country.upper() == "US":
+            number_data = await signalwire_provision_number(
+                country=body.country,
+                number_type=body.number_type,
+                pattern=body.pattern,
+                agent_id=body.agent_id,
+            )
+        else:
+            number_data = await plivo_provision_number(
+                country=body.country,
+                number_type=body.number_type,
+                pattern=body.pattern,
+                agent_id=body.agent_id,
+            )
     except Exception as e:
         error_msg = str(e)
         if "compliance" in error_msg.lower() or "kyc" in error_msg.lower():
@@ -99,7 +108,10 @@ async def provision(
         )
         # Try to release the number we just bought since DB save failed
         try:
-            await release_number(number_data["provider_id"])
+            if body.country.upper() == "US":
+                await signalwire_release_number(number_data["provider_id"])
+            else:
+                await plivo_release_number(number_data["provider_id"])
         except Exception:
             pass
         raise HTTPException(
@@ -301,7 +313,10 @@ async def release(
         raise HTTPException(404, "Number not found.")
 
     try:
-        await release_number(row["provider_id"])
+        if row["country"] == "US":
+            await signalwire_release_number(row["provider_id"])
+        else:
+            await plivo_release_number(row["provider_id"])
     except Exception:
         pass  # Best effort
 

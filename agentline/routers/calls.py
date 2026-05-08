@@ -20,7 +20,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from agentline.auth_middleware import get_current_account
 from agentline.database import get_db, get_db_conn
 from agentline.models.call import CallRequest
-from agentline.plivo_client import initiate_call
+from agentline.plivo_client import initiate_call as plivo_initiate_call
+from agentline.signalwire_client import initiate_call as signalwire_initiate_call
 
 logger = logging.getLogger(__name__)
 
@@ -72,11 +73,18 @@ async def create_call(
     )
 
     try:
-        provider_call_id = await initiate_call(
-            from_number=number["phone_number"],
-            to_number=body.to_number,
-            call_id=call_id,
-        )
+        if body.to_number.startswith("+1"):
+            provider_call_id = await signalwire_initiate_call(
+                from_number=number["phone_number"],
+                to_number=body.to_number,
+                call_id=call_id,
+            )
+        else:
+            provider_call_id = await plivo_initiate_call(
+                from_number=number["phone_number"],
+                to_number=body.to_number,
+                call_id=call_id,
+            )
     except Exception as e:
         await db.execute("UPDATE calls SET status='failed' WHERE id=$1", call_id)
         raise HTTPException(502, f"Failed to initiate call: {str(e)}")

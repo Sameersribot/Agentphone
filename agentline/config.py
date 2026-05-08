@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     # Plivo
     PLIVO_AUTH_ID: str = ""
     PLIVO_AUTH_TOKEN: str = ""
+    
+    # SignalWire Configuration
+    SIGNALWIRE_PROJECT_ID: str = ""
+    SIGNALWIRE_TOKEN: str = ""
+    SIGNALWIRE_SPACE_URL: str = ""
 
     # Voice Pipeline
     DEEPGRAM_API_KEY: str = ""

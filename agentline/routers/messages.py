@@ -11,7 +11,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from agentline.auth_middleware import get_current_account
 from agentline.database import get_db
 from agentline.models.message import MessageSend, MessageOut
-from agentline.plivo_client import send_sms
+from agentline.plivo_client import send_sms as plivo_send_sms
+from agentline.signalwire_client import send_sms as signalwire_send_sms
 
 router = APIRouter(prefix="/v1/messages", tags=["Messages"])
 
@@ -75,14 +76,22 @@ async def send_message(
             conv_id,
         )
 
-    # Send via Plivo
+    # Send via Plivo or SignalWire based on number prefix
     try:
-        result = await send_sms(
-            from_number=number["phone_number"],
-            to_number=body.to_number,
-            body=body.body,
-            media_url=body.media_url,
-        )
+        if body.to_number.startswith("+1"):
+            result = await signalwire_send_sms(
+                from_number=number["phone_number"],
+                to_number=body.to_number,
+                body=body.body,
+                media_url=body.media_url,
+            )
+        else:
+            result = await plivo_send_sms(
+                from_number=number["phone_number"],
+                to_number=body.to_number,
+                body=body.body,
+                media_url=body.media_url,
+            )
     except Exception as e:
         raise HTTPException(502, f"SMS delivery failed: {str(e)}")
 
