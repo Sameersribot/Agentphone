@@ -33,11 +33,25 @@ Your default agent ID is `$AGENTLINE_AGENT_ID`. Use this for all calls and SMS u
 
 ---
 
-## Voice Call — The Conversation Loop
+## Voice Modes
 
-This is the most important section. To have a real-time voice conversation, you must run a fast loop:
+AgentLine supports two voice modes, just like AgentPhone:
 
-### Step 1: Create the call
+### 1. Hosted Mode (default for outbound calls)
+The server runs the LLM using the agent's `system_prompt`. No webhook or external server needed. Just create the call and the AI handles everything.
+
+### 2. Webhook Mode
+Speech is transcribed in real-time and POSTed to your configured webhook URL as `agent.message` events with `channel: "voice"`. Your server processes with your own LLM and returns `{"text": "response text"}` in the HTTP response body. AgentLine speaks that text to the caller.
+
+This is the same pattern as AgentPhone — **one HTTP round-trip per conversation turn**.
+
+---
+
+## Voice Call — How It Works
+
+### Outbound Call (Hosted Mode — simplest)
+Just create the call with a `system_prompt`. The AI runs the conversation autonomously.
+
 ```bash
 curl -X POST $AGENTLINE_URL/v1/calls \
   -H "Authorization: Bearer $AGENTLINE_API_KEY" \
@@ -45,65 +59,84 @@ curl -X POST $AGENTLINE_URL/v1/calls \
   -d '{
     "agent_id": "$AGENTLINE_AGENT_ID",
     "to_number": "+1XXXXXXXXXX",
-    "system_prompt": "You are calling to schedule a meeting. Be polite and concise."
+    "system_prompt": "You are calling to schedule a meeting. Be polite and concise.",
+    "initial_greeting": "Hi! I wanted to check about scheduling a meeting."
   }'
 ```
-Save the `id` from the response — this is your `call_id`.
 
-### Step 2: Listen for caller's speech
-```bash
-curl "$AGENTLINE_URL/v1/calls/<call_id>/listen?wait=true&after=0" \
-  -H "Authorization: Bearer $AGENTLINE_API_KEY"
+The AI handles the full conversation. Poll `GET /v1/calls/<call_id>` until `status` is `completed` to get the transcript.
+
+### Webhook Mode (your LLM controls the conversation)
+If you have a webhook configured, speech is sent there instead. Your webhook receives:
+
+```json
+{
+  "event": "agent.message",
+  "channel": "voice",
+  "agentId": "agt_...",
+  "callId": "call_...",
+  "data": {
+    "transcript": "Hello, who is this?",
+    "fromNumber": "+14155551234",
+    "toNumber": "+14155559999",
+    "direction": "outbound"
+  },
+  "recentHistory": [
+    {"direction": "outbound", "content": "Hi! How can I help?", "timestamp": "..."},
+    {"direction": "inbound", "content": "Hello, who is this?", "timestamp": "..."}
+  ]
+}
 ```
-- `wait=true` — holds the connection until new speech arrives (up to 25 seconds)
-- `after=0` — only return transcript entries after this index
 
-This returns the caller's speech as a transcript array. Extract the latest human speech.
+Your webhook must return:
+```json
+{"text": "Hi! This is the scheduling assistant. I wanted to check about a meeting for Tuesday."}
+```
 
-### Step 3: Respond immediately
+That text is spoken to the caller immediately. **No polling, no /speak call — just return the response in the webhook body.**
+
+### Configure a Webhook
 ```bash
-curl -X POST $AGENTLINE_URL/v1/calls/<call_id>/speak \
+curl -X POST $AGENTLINE_URL/v1/webhooks \
   -H "Authorization: Bearer $AGENTLINE_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"text": "Sure, Tuesday at 3pm works. I will send you a confirmation."}'
+  -d '{"url": "https://your-server.com/voice-webhook", "agent_id": "$AGENTLINE_AGENT_ID"}'
 ```
 
-### Step 4: Loop back to Step 2
-After `/speak`, immediately go back to `/listen` with `after` set to the latest transcript index. Continue until the conversation is done.
+---
 
-### Step 5: End the call
+## Outbound Call Fields
+
+```bash
+curl -X POST $AGENTLINE_URL/v1/calls \
+  -H "Authorization: Bearer $AGENTLINE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent_id": "$AGENTLINE_AGENT_ID",
+    "to_number": "+1XXXXXXXXXX",
+    "system_prompt": "You are a helpful assistant.",
+    "initial_greeting": "Hello! How can I help?"
+  }'
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `agent_id` | Yes | Agent making the call |
+| `to_number` | Yes | E.164 phone number |
+| `system_prompt` | No | Override agent's default prompt |
+| `initial_greeting` | No | What the agent says first |
+| `model_tier` | No | `"turbo"`, `"balanced"`, or `"max"` |
+
+---
+
+## End a Call
+
 ```bash
 curl -X POST $AGENTLINE_URL/v1/calls/<call_id>/hangup \
   -H "Authorization: Bearer $AGENTLINE_API_KEY"
 ```
 
-### ⚡ CRITICAL: Speed Requirements
-
-> **You have 15 seconds to respond via /speak after the caller finishes talking.**
-> If you don't respond in 15 seconds, a fallback LLM will answer for you.
-> Aim for under 5 seconds: receive speech → process → call /speak.
-
-The voice pipeline works like this:
-1. Caller speaks → real-time transcription (instant)
-2. Transcript saved to DB → your `/listen` returns it
-3. **You must call `/speak` within 15 seconds**
-4. AgentLine speaks your text to the caller → listens for next speech → loop
-
-### Example Conversation Loop (pseudocode)
-```
-call = POST /v1/calls {agent_id, to_number}
-after = 0
-
-while call is active:
-    transcript = GET /v1/calls/{call.id}/listen?wait=true&after={after}
-    latest_speech = extract latest human entry from transcript
-    after = len(transcript)
-
-    response = YOUR_LLM.generate(latest_speech)  # Your agent's brain
-    POST /v1/calls/{call.id}/speak {text: response}
-
-POST /v1/calls/{call.id}/hangup
-```
+Or from your webhook, return: `{"text": "Goodbye!", "hangup": true}`
 
 ---
 
@@ -137,8 +170,6 @@ curl $AGENTLINE_URL/v1/calls/<call_id>/transcript \
 curl "$AGENTLINE_URL/v1/calls?limit=10" \
   -H "Authorization: Bearer $AGENTLINE_API_KEY"
 ```
-
-Optional query params: `agent_id`, `status` (initiated, in-progress, completed, failed), `limit`, `offset`
 
 ---
 
@@ -177,14 +208,19 @@ Note: Each agent can only have ONE active phone number.
 
 ---
 
+## Legacy API (still works)
+
+The `/listen` and `/speak` polling endpoints still work for backwards compatibility, but the webhook-response pattern is preferred for lower latency.
+
+---
+
 ## Rules
 
 1. **Always use E.164 phone numbers** — format: `+1XXXXXXXXXX` (US), `+91XXXXXXXXXX` (India).
 2. **Always confirm with the user before placing calls** — never auto-dial without explicit consent.
 3. **Use `$AGENTLINE_AGENT_ID` by default** — only look up agents if the user asks to manage them.
-4. **Be FAST during voice calls** — you have 15 seconds to respond via `/speak`. Process speech and respond as quickly as possible.
-5. **Run the conversation loop** — don't just create a call and forget it. Run `/listen` → process → `/speak` → loop until done.
-6. **End the call when done** — call `/hangup` when the conversation is finished.
-7. **Keep voice responses short** — under 30 words per response. The caller is listening, not reading.
-8. **If a call fails with 400 "Agent has no active phone number"**, provision a number first.
-9. **SMS supports MMS** — pass `media_url` to attach images.
+4. **For hosted mode** — just create the call with a system_prompt. The AI handles everything.
+5. **For webhook mode** — configure a webhook, return `{"text": "..."}` in the response body. That's it.
+6. **Keep voice responses short** — under 30 words per response. The caller is listening, not reading.
+7. **If a call fails with 400 "Agent has no active phone number"**, provision a number first.
+8. **SMS supports MMS** — pass `media_url` to attach images.
