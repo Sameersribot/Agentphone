@@ -1,13 +1,12 @@
 """
-AgentLine — SignalWire Events Router (Low-Latency Mode)
+AgentLine — SignalWire Events Router
 Voice Architecture for US numbers:
   STT: SignalWire <Gather input="speech"> (real-time, no Deepgram needed)
-  LLM: Server-side GPT via OpenAI (1-2s response)
+  LLM: External agent responds via /speak (server-side GPT as fallback only)
   TTS: SignalWire <Say> (instant)
 
-  Latency target: ~2-3 seconds per turn.
-
-  External agents can still monitor via /listen and override via /speak.
+  The external agent drives the conversation via /listen + /speak.
+  Server-side LLM only kicks in if the agent doesn't respond within 15 seconds.
 """
 
 import asyncio
