@@ -1,8 +1,13 @@
 """
-AgentLine — SignalWire Events Router (Hybrid Relay Mode)
+AgentLine — SignalWire Events Router (Low-Latency Mode)
 Voice Architecture for US numbers:
-  TTS: SignalWire <Say>
-  STT: SignalWire <Record> → Deepgram transcription
+  STT: SignalWire <Gather input="speech"> (real-time, no Deepgram needed)
+  LLM: Server-side GPT via OpenAI (1-2s response)
+  TTS: SignalWire <Say> (instant)
+
+  Latency target: ~2-3 seconds per turn.
+
+  External agents can still monitor via /listen and override via /speak.
 """
 
 import asyncio
@@ -18,6 +23,7 @@ from fastapi.responses import Response
 from agentline.config import settings
 from agentline.database import get_db_conn
 from agentline.webhook_dispatcher import dispatch_webhook
+from agentline.voice.llm import llm_response
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +41,26 @@ def _escape_xml(text: str) -> str:
         .replace("'", "&apos;")
     )
 
+def _gather_xml(call_id: str, prompt: str = "I am listening.") -> str:
+    """
+    Generate XML: speak a prompt, then gather caller speech in real-time.
+
+    Uses <Gather input="speech"> for instant STT instead of <Record> + Deepgram.
+    SignalWire transcribes speech live — result arrives as SpeechResult in the callback.
+    """
+    gather_url = f"{settings.base_url_clean}/signalwire/gathered/{call_id}"
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Gather input="speech" action="{gather_url}" method="POST"
+            speechTimeout="3" timeout="10" language="en-US">
+        <Say voice="alice">{_escape_xml(prompt)}</Say>
+    </Gather>
+    <Say voice="alice">I did not hear anything. Goodbye.</Say>
+</Response>"""
+
+
 def _listen_xml(call_id: str, prompt: str = "I am listening.") -> str:
-    """Generate XML: speak a prompt, then record the caller's response."""
+    """Legacy: speak + record. Kept for fallback but gather is preferred."""
     record_url = f"{settings.base_url_clean}/signalwire/recorded/{call_id}"
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -108,7 +132,7 @@ async def _dispatch_speech_webhook(
 
 @router.post("/answer/{call_id}")
 async def signalwire_answer(request: Request, call_id: str):
-    """Call answered — speak greeting, then record caller's response."""
+    """Call answered — speak greeting, then gather caller's speech in real-time."""
     form = await request.form()
     call_sid = form.get("CallSid", "")
     logger.info("Call %s answered (SignalWire SID: %s)", call_id, call_sid)
@@ -128,7 +152,107 @@ async def signalwire_answer(request: Request, call_id: str):
             if agent and agent.get("initial_greeting"):
                 greeting = agent["initial_greeting"]
 
-    xml = _listen_xml(call_id, greeting)
+    xml = _gather_xml(call_id, greeting)
+    return _xml(xml)
+
+
+# ────────────────────────────────────────────────────────────
+# Voice — Gather Callback (Low-Latency)
+# Receives real-time speech from <Gather input="speech">,
+# processes with LLM server-side, responds instantly.
+# ────────────────────────────────────────────────────────────
+
+@router.post("/gathered/{call_id}")
+async def signalwire_gathered(request: Request, call_id: str):
+    """
+    Low-latency speech handler.
+
+    SignalWire transcribes speech in real-time and POSTs the result here
+    as `SpeechResult`. We immediately call the LLM, save the transcript,
+    and return <Say> + <Gather> for the next turn.
+
+    Timeline: speech ends → ~1-2s LLM → response plays = ~2-3s total.
+    """
+    form = await request.form()
+    speech_text = form.get("SpeechResult", "").strip()
+    confidence = form.get("Confidence", "0")
+    call_sid = form.get("CallSid", "")
+
+    logger.info("Call %s — gathered speech (confidence=%s): '%s'", call_id, confidence, speech_text)
+
+    if not speech_text:
+        xml = _gather_xml(call_id, "I didn't catch that. Could you say that again?")
+        return _xml(xml)
+
+    # Load call + agent context
+    async with get_db_conn() as db:
+        call = await db.fetchrow("SELECT * FROM calls WHERE id=$1", call_id)
+        if not call:
+            return _xml('<?xml version="1.0" encoding="UTF-8"?><Response><Say>Call not found.</Say></Response>')
+
+        agent = await db.fetchrow("SELECT * FROM agents WHERE id=$1", call["agent_id"])
+
+        # Build conversation history from transcript
+        transcript = _parse_transcript(call.get("transcript"))
+
+        # Add caller's speech to transcript
+        transcript.append({
+            "role": "human",
+            "text": speech_text,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+
+    # Check if external agent has already queued a response via /speak
+    async with get_db_conn() as db:
+        override = await db.fetchrow(
+            """SELECT id, response_text FROM call_responses
+               WHERE call_id=$1 AND spoken=false
+               ORDER BY created_at ASC LIMIT 1""",
+            call_id,
+        )
+
+    if override:
+        # External agent beat us — use their response
+        agent_reply = override["response_text"]
+        async with get_db_conn() as db:
+            await db.execute("UPDATE call_responses SET spoken=true WHERE id=$1", override["id"])
+        logger.info("Call %s — using external agent override: %s", call_id, agent_reply[:80])
+    else:
+        # Generate response with server-side LLM (~1-2 seconds)
+        system_prompt = (agent.get("system_prompt") if agent else None) or "You are a helpful voice assistant. Keep responses brief and conversational."
+        model_tier = (agent.get("model_tier") if agent else None) or "balanced"
+
+        # Convert transcript to OpenAI format
+        chat_history = []
+        for entry in transcript:
+            role = "user" if entry.get("role") == "human" else "assistant"
+            chat_history.append({"role": role, "content": entry.get("text", "")})
+
+        agent_reply = await llm_response(system_prompt, chat_history, model_tier)
+        logger.info("Call %s — LLM response: %s", call_id, agent_reply[:80])
+
+    # Save both human speech + agent reply to transcript
+    transcript.append({
+        "role": "agent",
+        "text": agent_reply,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+
+    async with get_db_conn() as db:
+        await db.execute(
+            "UPDATE calls SET transcript=$1 WHERE id=$2",
+            json.dumps(transcript), call_id,
+        )
+
+    # Fire webhook in background (non-blocking)
+    asyncio.create_task(_dispatch_speech_webhook(
+        call["account_id"], call["agent_id"],
+        call_id, call_sid or call.get("provider_call_id", ""),
+        speech_text, call,
+    ))
+
+    # Return response + listen for next speech — instant!
+    xml = _gather_xml(call_id, agent_reply)
     return _xml(xml)
 
 
@@ -230,8 +354,8 @@ async def signalwire_wait_for_response(request: Request, call_id: str):
                     json.dumps(transcript), call_id,
                 )
 
-                # Speak the response and record the caller's next reply
-                xml = _listen_xml(call_id, response_text)
+                # Speak the response and gather the caller's next reply
+                xml = _gather_xml(call_id, response_text)
                 return _xml(xml)
 
             # Check if call ended externally
