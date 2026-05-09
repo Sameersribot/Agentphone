@@ -52,7 +52,7 @@ def _record_xml(call_id: str) -> str:
     """Generate the <Record> XML block that captures caller speech."""
     record_url = f"{settings.base_url_clean}/plivo/recorded/{call_id}"
     return f"""<Record action="{record_url}" method="POST"
-            maxLength="30" timeout="5" finishOnKey="#"
+            maxLength="30" timeout="3" finishOnKey="#"
             playBeep="false" redirect="true"/>"""
 
 
@@ -62,7 +62,7 @@ def _listen_xml(call_id: str, prompt: str = "I am listening.") -> str:
     return f"""<Response>
     <Speak voice="Polly.Aditi">{_escape_xml(prompt)}</Speak>
     <Record action="{record_url}" method="POST"
-            maxLength="30" timeout="5" finishOnKey="#"
+            maxLength="30" timeout="3" finishOnKey="#"
             playBeep="false" redirect="true"/>
     <Speak voice="Polly.Aditi">I did not hear anything. Goodbye.</Speak>
 </Response>"""
@@ -193,10 +193,10 @@ async def plivo_recording_callback(request: Request, call_id: str):
         speech_text, call,
     ))
 
-    # Enter wait loop for agent's response (silent — no annoying "one moment" repeat)
+    # Enter wait loop for agent's response
     wait_url = f"{settings.base_url_clean}/plivo/wait/{call_id}"
     xml = f"""<Response>
-    <Wait length="2"/>
+    <Wait length="3"/>
     <Redirect method="POST">{wait_url}</Redirect>
 </Response>"""
 
@@ -204,57 +204,66 @@ async def plivo_recording_callback(request: Request, call_id: str):
 
 
 # ────────────────────────────────────────────────────────────
-# Voice — Wait Loop
-# Polls for agent's response queued via POST /v1/calls/{id}/speak
+# Voice — Wait Loop (Server-side polling)
+# Holds the HTTP connection and polls DB for agent's response.
+# Avoids Plivo's redirect depth limit by doing the waiting server-side.
 # ────────────────────────────────────────────────────────────
 
 @router.post("/wait/{call_id}")
 async def plivo_wait_for_response(request: Request, call_id: str):
-    """Check if agent has queued a response. If yes, speak + listen. If no, wait."""
-    async with get_db_conn() as db:
-        # Check for queued response
-        queued = await db.fetchrow(
-            """SELECT id, response_text FROM call_responses
-               WHERE call_id=$1 AND spoken=false
-               ORDER BY created_at ASC LIMIT 1""",
-            call_id,
-        )
+    """
+    Server-side polling wait loop.
 
-        if queued:
-            await db.execute(
-                "UPDATE call_responses SET spoken=true WHERE id=$1",
-                queued["id"],
+    Holds the HTTP connection open and polls the DB every 2 seconds
+    for up to 55 seconds, giving the agent time to call /speak.
+    """
+    for i in range(27):  # 27 iterations × 2s = 54s max
+        async with get_db_conn() as db:
+            queued = await db.fetchrow(
+                """SELECT id, response_text FROM call_responses
+                   WHERE call_id=$1 AND spoken=false
+                   ORDER BY created_at ASC LIMIT 1""",
+                call_id,
             )
 
-            response_text = queued["response_text"]
-            logger.info("Call %s — agent says: %s", call_id, response_text[:80])
+            if queued:
+                await db.execute(
+                    "UPDATE call_responses SET spoken=true WHERE id=$1",
+                    queued["id"],
+                )
 
-            # Add to transcript
-            call = await db.fetchrow("SELECT transcript FROM calls WHERE id=$1", call_id)
-            transcript = _parse_transcript(call.get("transcript") if call else None)
-            transcript.append({
-                "role": "agent",
-                "text": response_text,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
-            await db.execute(
-                "UPDATE calls SET transcript=$1 WHERE id=$2",
-                json.dumps(transcript), call_id,
-            )
+                response_text = queued["response_text"]
+                logger.info("Call %s — agent says (after %ds): %s", call_id, i * 2, response_text[:80])
 
-            # Speak response, then record again
-            xml = _listen_xml(call_id, response_text)
-            return _xml(xml)
+                # Add to transcript
+                call = await db.fetchrow("SELECT transcript FROM calls WHERE id=$1", call_id)
+                transcript = _parse_transcript(call.get("transcript") if call else None)
+                transcript.append({
+                    "role": "agent",
+                    "text": response_text,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+                await db.execute(
+                    "UPDATE calls SET transcript=$1 WHERE id=$2",
+                    json.dumps(transcript), call_id,
+                )
 
-        # Check if call still active
-        call = await db.fetchrow("SELECT status FROM calls WHERE id=$1", call_id)
-        if not call or call["status"] == "completed":
-            return _xml("<Response><Speak>Goodbye.</Speak></Response>")
+                # Speak response, then record again
+                xml = _listen_xml(call_id, response_text)
+                return _xml(xml)
 
-    # No response yet — wait 2 seconds and check again (silent hold)
+            # Check if call still active
+            call = await db.fetchrow("SELECT status FROM calls WHERE id=$1", call_id)
+            if not call or call["status"] == "completed":
+                return _xml("<Response><Speak>Goodbye.</Speak></Response>")
+
+        # Wait 2 seconds before next check
+        await asyncio.sleep(2)
+
+    # Timed out — redirect back for another round
+    logger.warning("Call %s — wait loop timed out after 54s, looping again", call_id)
     wait_url = f"{settings.base_url_clean}/plivo/wait/{call_id}"
     xml = f"""<Response>
-    <Wait length="2"/>
     <Redirect method="POST">{wait_url}</Redirect>
 </Response>"""
     return _xml(xml)

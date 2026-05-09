@@ -42,7 +42,7 @@ def _listen_xml(call_id: str, prompt: str = "I am listening.") -> str:
 <Response>
     <Say voice="alice">{_escape_xml(prompt)}</Say>
     <Record action="{record_url}" method="POST"
-            maxLength="30" timeout="5" finishOnKey="#"
+            maxLength="30" timeout="3" finishOnKey="#"
             playBeep="false" />
     <Say voice="alice">I did not hear anything. Goodbye.</Say>
 </Response>"""
@@ -180,7 +180,7 @@ async def signalwire_recording_callback(request: Request, call_id: str):
     wait_url = f"{settings.base_url_clean}/signalwire/wait/{call_id}"
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Pause length="2"/>
+    <Pause length="3"/>
     <Redirect method="POST">{wait_url}</Redirect>
 </Response>"""
     return _xml(xml)
@@ -188,46 +188,66 @@ async def signalwire_recording_callback(request: Request, call_id: str):
 
 @router.post("/wait/{call_id}")
 async def signalwire_wait_for_response(request: Request, call_id: str):
-    """Check if agent has queued a response."""
-    async with get_db_conn() as db:
-        queued = await db.fetchrow(
-            """SELECT id, response_text FROM call_responses
-               WHERE call_id=$1 AND spoken=false
-               ORDER BY created_at ASC LIMIT 1""",
-            call_id,
-        )
+    """
+    Server-side polling wait loop.
 
-        if queued:
-            await db.execute(
-                "UPDATE call_responses SET spoken=true WHERE id=$1",
-                queued["id"],
+    Instead of using TwiML <Pause>+<Redirect> loops (which hit SignalWire's
+    ~10 redirect depth limit after ~20 seconds), we hold the HTTP connection
+    open and poll the DB server-side for up to 55 seconds.
+
+    This gives the agent plenty of time to process speech and call /speak.
+    """
+    # Poll the DB every 2 seconds for up to 55 seconds
+    for i in range(27):  # 27 iterations × 2s = 54s max
+        async with get_db_conn() as db:
+            # Check for queued response from the agent
+            queued = await db.fetchrow(
+                """SELECT id, response_text FROM call_responses
+                   WHERE call_id=$1 AND spoken=false
+                   ORDER BY created_at ASC LIMIT 1""",
+                call_id,
             )
 
-            response_text = queued["response_text"]
-            
-            call = await db.fetchrow("SELECT transcript FROM calls WHERE id=$1", call_id)
-            transcript = _parse_transcript(call.get("transcript") if call else None)
-            transcript.append({
-                "role": "agent",
-                "text": response_text,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
-            await db.execute(
-                "UPDATE calls SET transcript=$1 WHERE id=$2",
-                json.dumps(transcript), call_id,
-            )
+            if queued:
+                await db.execute(
+                    "UPDATE call_responses SET spoken=true WHERE id=$1",
+                    queued["id"],
+                )
 
-            xml = _listen_xml(call_id, response_text)
-            return _xml(xml)
+                response_text = queued["response_text"]
+                logger.info("Call %s — agent says (after %ds): %s", call_id, i * 2, response_text[:80])
 
-        call = await db.fetchrow("SELECT status FROM calls WHERE id=$1", call_id)
-        if not call or call["status"] == "completed":
-            return _xml("<Response><Say>Goodbye.</Say></Response>")
+                # Add to transcript
+                call = await db.fetchrow("SELECT transcript FROM calls WHERE id=$1", call_id)
+                transcript = _parse_transcript(call.get("transcript") if call else None)
+                transcript.append({
+                    "role": "agent",
+                    "text": response_text,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+                await db.execute(
+                    "UPDATE calls SET transcript=$1 WHERE id=$2",
+                    json.dumps(transcript), call_id,
+                )
 
+                # Speak the response and record the caller's next reply
+                xml = _listen_xml(call_id, response_text)
+                return _xml(xml)
+
+            # Check if call ended externally
+            call = await db.fetchrow("SELECT status FROM calls WHERE id=$1", call_id)
+            if not call or call["status"] == "completed":
+                return _xml("""<?xml version="1.0" encoding="UTF-8"?>
+<Response><Say voice="alice">Goodbye.</Say></Response>""")
+
+        # Wait 2 seconds before next check
+        await asyncio.sleep(2)
+
+    # Timed out waiting for agent — redirect back for another round
+    logger.warning("Call %s — wait loop timed out after 54s, looping again", call_id)
     wait_url = f"{settings.base_url_clean}/signalwire/wait/{call_id}"
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Pause length="2"/>
     <Redirect method="POST">{wait_url}</Redirect>
 </Response>"""
     return _xml(xml)
