@@ -27,10 +27,9 @@ class Settings(BaseSettings):
     SIGNALWIRE_TOKEN: str = ""
     SIGNALWIRE_SPACE_URL: str = ""
 
-    # Voice Pipeline
-    DEEPGRAM_API_KEY: str = ""
-    CARTESIA_API_KEY: str = ""
+    # Voice Pipeline — LLM
     OPENAI_API_KEY: str = ""
+    OPENAI_BASE_URL: str = "https://api.inceptionlabs.ai/v1"
 
     # App
     SECRET_KEY: str = "change-me-in-production"

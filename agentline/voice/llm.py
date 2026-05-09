@@ -1,6 +1,7 @@
 """
 AgentLine — LLM Wrapper
-GPT-4o conversation engine for voice responses.
+Mercury-2 (Inception Labs) conversation engine for voice responses.
+Mercury is a diffusion LLM — ultra-fast generation, ideal for voice.
 """
 
 import logging
@@ -10,14 +11,17 @@ from agentline.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Initialize client
-client = openai.AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+# Initialize client — Mercury Inception API is OpenAI-compatible
+client = openai.AsyncOpenAI(
+    api_key=settings.OPENAI_API_KEY,
+    base_url=settings.OPENAI_BASE_URL,
+)
 
-# Model tier mapping
+# Model tier mapping — all tiers use Mercury-2 (it's fast enough for all)
 MODEL_MAP = {
-    "turbo":    "gpt-4o-mini",
-    "balanced": "gpt-4o",
-    "max":      "gpt-4o",
+    "turbo":    "mercury-2",
+    "balanced": "mercury-2",
+    "max":      "mercury-2",
 }
 
 
