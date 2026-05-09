@@ -157,21 +157,28 @@ async def signalwire_answer(request: Request, call_id: str):
 
 
 # ────────────────────────────────────────────────────────────
-# Voice — Gather Callback (Low-Latency)
+# Voice — Gather Callback
 # Receives real-time speech from <Gather input="speech">,
-# processes with LLM server-side, responds instantly.
+# saves transcript immediately, waits for the AGENT's response
+# via /speak. Server-side LLM is only a timeout fallback.
 # ────────────────────────────────────────────────────────────
+
+AGENT_RESPONSE_TIMEOUT = 15  # seconds to wait for the agent before fallback
 
 @router.post("/gathered/{call_id}")
 async def signalwire_gathered(request: Request, call_id: str):
     """
-    Low-latency speech handler.
+    Real-time speech handler — waits for the EXTERNAL AGENT to respond.
 
-    SignalWire transcribes speech in real-time and POSTs the result here
-    as `SpeechResult`. We immediately call the LLM, save the transcript,
-    and return <Say> + <Gather> for the next turn.
+    Flow:
+      1. SignalWire transcribes speech in real-time (SpeechResult)
+      2. Save transcript to DB immediately (so agent's /listen returns it)
+      3. Fire webhook to notify agent (non-blocking)
+      4. Poll DB for agent's /speak response (up to 15 seconds)
+      5. If agent responds → use THEIR reply (the real conversation)
+      6. If timeout → fallback to server-side LLM (safety net only)
 
-    Timeline: speech ends → ~1-2s LLM → response plays = ~2-3s total.
+    With a responsive agent: ~3-5 second latency.
     """
     form = await request.form()
     speech_text = form.get("SpeechResult", "").strip()
@@ -184,7 +191,7 @@ async def signalwire_gathered(request: Request, call_id: str):
         xml = _gather_xml(call_id, "I didn't catch that. Could you say that again?")
         return _xml(xml)
 
-    # Load call + agent context
+    # ── Step 1: Load call + agent context ──
     async with get_db_conn() as db:
         call = await db.fetchrow("SELECT * FROM calls WHERE id=$1", call_id)
         if not call:
@@ -192,66 +199,85 @@ async def signalwire_gathered(request: Request, call_id: str):
 
         agent = await db.fetchrow("SELECT * FROM agents WHERE id=$1", call["agent_id"])
 
-        # Build conversation history from transcript
+        # Build conversation history and add caller's speech
         transcript = _parse_transcript(call.get("transcript"))
-
-        # Add caller's speech to transcript
         transcript.append({
             "role": "human",
             "text": speech_text,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
 
-    # Check if external agent has already queued a response via /speak
-    async with get_db_conn() as db:
-        override = await db.fetchrow(
-            """SELECT id, response_text FROM call_responses
-               WHERE call_id=$1 AND spoken=false
-               ORDER BY created_at ASC LIMIT 1""",
-            call_id,
-        )
-
-    if override:
-        # External agent beat us — use their response
-        agent_reply = override["response_text"]
-        async with get_db_conn() as db:
-            await db.execute("UPDATE call_responses SET spoken=true WHERE id=$1", override["id"])
-        logger.info("Call %s — using external agent override: %s", call_id, agent_reply[:80])
-    else:
-        # Generate response with server-side LLM (~1-2 seconds)
-        system_prompt = (agent.get("system_prompt") if agent else None) or "You are a helpful voice assistant. Keep responses brief and conversational."
-        model_tier = (agent.get("model_tier") if agent else None) or "balanced"
-
-        # Convert transcript to OpenAI format
-        chat_history = []
-        for entry in transcript:
-            role = "user" if entry.get("role") == "human" else "assistant"
-            chat_history.append({"role": role, "content": entry.get("text", "")})
-
-        agent_reply = await llm_response(system_prompt, chat_history, model_tier)
-        logger.info("Call %s — LLM response: %s", call_id, agent_reply[:80])
-
-    # Save both human speech + agent reply to transcript
-    transcript.append({
-        "role": "agent",
-        "text": agent_reply,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    })
-
-    async with get_db_conn() as db:
+        # Save transcript IMMEDIATELY so agent's /listen returns it
         await db.execute(
             "UPDATE calls SET transcript=$1 WHERE id=$2",
             json.dumps(transcript), call_id,
         )
 
-    # Fire webhook in background (non-blocking)
+    # ── Step 2: Notify agent via webhook (non-blocking) ──
     asyncio.create_task(_dispatch_speech_webhook(
         call["account_id"], call["agent_id"],
         call_id, call_sid or call.get("provider_call_id", ""),
         speech_text, call,
     ))
 
-    # Return response + listen for next speech — instant!
+    # ── Step 3: Wait for agent's /speak response (up to 15 seconds) ──
+    agent_reply = None
+    for i in range(AGENT_RESPONSE_TIMEOUT):  # Check every 1 second
+        async with get_db_conn() as db:
+            queued = await db.fetchrow(
+                """SELECT id, response_text FROM call_responses
+                   WHERE call_id=$1 AND spoken=false
+                   ORDER BY created_at ASC LIMIT 1""",
+                call_id,
+            )
+
+            if queued:
+                agent_reply = queued["response_text"]
+                await db.execute(
+                    "UPDATE call_responses SET spoken=true WHERE id=$1",
+                    queued["id"],
+                )
+                logger.info(
+                    "Call %s — agent responded in %ds: %s",
+                    call_id, i + 1, agent_reply[:80],
+                )
+                break
+
+        await asyncio.sleep(1)
+
+    # ── Step 4: Fallback to server-side LLM if agent didn't respond ──
+    if not agent_reply:
+        logger.warning(
+            "Call %s — agent did not respond in %ds, using LLM fallback",
+            call_id, AGENT_RESPONSE_TIMEOUT,
+        )
+        system_prompt = (
+            (agent.get("system_prompt") if agent else None)
+            or "You are a helpful voice assistant. Keep responses brief and conversational."
+        )
+        model_tier = (agent.get("model_tier") if agent else None) or "balanced"
+
+        chat_history = []
+        for entry in transcript:
+            role = "user" if entry.get("role") == "human" else "assistant"
+            chat_history.append({"role": role, "content": entry.get("text", "")})
+
+        agent_reply = await llm_response(system_prompt, chat_history, model_tier)
+        logger.info("Call %s — LLM fallback response: %s", call_id, agent_reply[:80])
+
+    # ── Step 5: Save agent reply to transcript ──
+    transcript.append({
+        "role": "agent",
+        "text": agent_reply,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+    async with get_db_conn() as db:
+        await db.execute(
+            "UPDATE calls SET transcript=$1 WHERE id=$2",
+            json.dumps(transcript), call_id,
+        )
+
+    # Return agent's response + listen for next speech
     xml = _gather_xml(call_id, agent_reply)
     return _xml(xml)
 
