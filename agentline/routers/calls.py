@@ -6,6 +6,7 @@ Agent-Controlled Relay Mode:
   1. Agent creates call → POST /v1/calls
   2. Agent polls for speech → GET /v1/calls/{id}/listen (supports long-polling)
   3. Agent sends response → POST /v1/calls/{id}/speak
+  4. Agent ends the call → POST /v1/calls/{id}/hangup
   No webhook registration needed.
 """
 
@@ -21,7 +22,9 @@ from agentline.auth_middleware import get_current_account
 from agentline.database import get_db, get_db_conn
 from agentline.models.call import CallRequest
 from agentline.plivo_client import initiate_call as plivo_initiate_call
+from agentline.plivo_client import hangup_call as plivo_hangup_call
 from agentline.signalwire_client import initiate_call as signalwire_initiate_call
+from agentline.signalwire_client import hangup_call as signalwire_hangup_call
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +191,61 @@ async def speak_on_call(
 
     logger.info("Call %s — agent queued: %s", call_id, text[:80])
     return {"queued": True, "call_id": call_id, "text": text}
+
+
+@router.post("/{call_id}/hangup")
+async def hangup_call(
+    call_id: str,
+    account=Depends(get_current_account),
+    db=Depends(get_db),
+):
+    """
+    Hang up / terminate an active call.
+
+    The agent calls this endpoint to programmatically end the call.
+    Works for both Plivo and SignalWire calls.
+    """
+    call = await db.fetchrow(
+        "SELECT * FROM calls WHERE id=$1 AND account_id=$2",
+        call_id, account["id"],
+    )
+    if not call:
+        raise HTTPException(404, "Call not found.")
+    if call["status"] == "completed":
+        return {"call_id": call_id, "status": "completed", "message": "Call already ended."}
+
+    provider_call_id = call.get("provider_call_id")
+    if not provider_call_id:
+        # No provider call ID means the call never connected — just mark completed
+        await db.execute(
+            "UPDATE calls SET status='completed', ended_at=now() WHERE id=$1",
+            call_id,
+        )
+        return {"call_id": call_id, "status": "completed", "message": "Call was never connected, marked as completed."}
+
+    # Determine provider from the number's country (US = SignalWire, else Plivo)
+    number = await db.fetchrow(
+        "SELECT country FROM phone_numbers WHERE id=$1",
+        call["number_id"],
+    )
+    use_signalwire = number and number["country"] == "US"
+
+    try:
+        if use_signalwire:
+            await signalwire_hangup_call(provider_call_id)
+        else:
+            await plivo_hangup_call(provider_call_id)
+    except Exception as e:
+        logger.warning("Provider hangup failed for call %s: %s (marking completed anyway)", call_id, e)
+
+    # Mark the call as completed in our DB
+    await db.execute(
+        "UPDATE calls SET status='completed', ended_at=now() WHERE id=$1 AND status!='completed'",
+        call_id,
+    )
+
+    logger.info("Call %s — agent-initiated hangup", call_id)
+    return {"call_id": call_id, "status": "completed", "message": "Call terminated."}
 
 
 @router.get("/{call_id}/listen")

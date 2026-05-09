@@ -75,6 +75,34 @@ async def initiate_call(
         logger.error("SignalWire call failed (non-HTTP): %s", e)
         raise Exception(f"SignalWire call failed: {e}")
 
+
+async def hangup_call(provider_call_id: str) -> None:
+    """
+    Terminate a live call via SignalWire.
+
+    Uses the Twilio-compatible API:
+    POST /Accounts/{id}/Calls/{sid}.json  with Status=completed
+
+    Args:
+        provider_call_id: The SignalWire call SID
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"{_get_base_url()}/Calls/{provider_call_id}.json",
+                auth=_get_auth(),
+                data={"Status": "completed"},
+            )
+            response.raise_for_status()
+            logger.info("SignalWire hangup successful: %s", provider_call_id)
+    except httpx.HTTPStatusError as e:
+        logger.warning("SignalWire hangup failed for %s: %s", provider_call_id, e.response.text)
+        raise Exception(f"SignalWire hangup failed: {e.response.text}")
+    except Exception as e:
+        logger.warning("SignalWire hangup failed for %s: %s", provider_call_id, e)
+        raise Exception(f"SignalWire hangup failed: {e}")
+
+
 async def send_sms(
     from_number: str,
     to_number: str,

@@ -252,3 +252,20 @@ async def initiate_call(
 
     logger.info("Outbound call initiated: %s → %s (uuid: %s)", from_number, to_number, request_uuid)
     return request_uuid or "unknown"
+
+
+async def hangup_call(provider_call_id: str) -> None:
+    """
+    Terminate a live call via Plivo.
+
+    Plivo API: DELETE /v1/Account/{auth_id}/Call/{call_uuid}/
+
+    Args:
+        provider_call_id: The Plivo call UUID (request_uuid returned at initiation)
+    """
+    try:
+        await _run(_get_client().calls.hangup, call_uuid=provider_call_id)
+        logger.info("Plivo hangup successful: %s", provider_call_id)
+    except plivo.exceptions.PlivoRestError as e:
+        logger.warning("Plivo hangup failed for %s: %s", provider_call_id, e)
+        raise Exception(f"Plivo hangup failed: {e}")

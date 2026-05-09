@@ -49,6 +49,9 @@ uvicorn agentline.main:app --reload
 | `GET/POST` | `/v1/numbers` | Provision/release phone numbers |
 | `GET/POST` | `/v1/messages` | Send/list SMS messages |
 | `GET/POST` | `/v1/calls` | Initiate/list voice calls |
+| `POST` | `/v1/calls/{id}/speak` | Send TTS response on active call |
+| `POST` | `/v1/calls/{id}/hangup` | Terminate an active call |
+| `GET` | `/v1/calls/{id}/listen` | Poll for caller speech (long-poll) |
 | `GET/POST` | `/v1/webhooks` | Configure event webhooks |
 | `GET` | `/v1/usage` | Usage statistics |
 
@@ -73,6 +76,7 @@ Provider (Plivo/SignalWire) answers call
     → Provider enters silent <Wait> loop
     → Agent responds via `POST /v1/calls/{id}/speak`
     → Provider plays agent's response and loops back to recording
+    → Agent can end the call at any time via `POST /v1/calls/{id}/hangup`
 ```
 
 ## Telephony Providers
