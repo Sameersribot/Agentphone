@@ -40,13 +40,29 @@ def _xml(body: str) -> Response:
 
 
 def _escape_xml(text: str) -> str:
-    return (
+    """Escape characters that break XML or cause TTS issues."""
+    if not text:
+        return ""
+    # Replace smart/curly quotes and dashes with plain ASCII equivalents
+    text = text.replace("\u2019", "'")   # ' (curly apostrophe)
+    text = text.replace("\u2018", "'")   # ' (curly single quote left)
+    text = text.replace("\u201c", '"')   # " (curly double quote left)
+    text = text.replace("\u201d", '"')   # " (curly double quote right)
+    text = text.replace("\u2014", "-")   # — (em dash)
+    text = text.replace("\u2013", "-")   # – (en dash)
+    text = text.replace("\u00e2", "a")   # â
+    text = text.replace("\u00e9", "e")   # é
+    text = text.replace("\u00f1", "n")   # ñ
+    text = text.replace("\u2026", "...")  # … (ellipsis)
+    # Standard XML entities
+    text = (
         text.replace("&", "&amp;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
         .replace('"', "&quot;")
         .replace("'", "&apos;")
     )
+    return text
 
 
 def _record_xml(call_id: str) -> str:
