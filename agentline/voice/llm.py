@@ -38,7 +38,14 @@ async def llm_response(
     messages = [
         {"role": "system", "content": system_prompt or "You are a helpful voice assistant. Keep responses brief and conversational."},
     ]
-    messages.extend(conversation_history)
+    
+    # Map internal transcript format to OpenAI chat format
+    for turn in conversation_history:
+        role = "user" if turn.get("role") == "human" else "assistant"
+        messages.append({
+            "role": role,
+            "content": turn.get("text", "")
+        })
 
     try:
         response = await client.chat.completions.create(
