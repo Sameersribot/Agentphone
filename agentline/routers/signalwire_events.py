@@ -1,15 +1,12 @@
 """
-AgentLine — SignalWire Events Router (Webhook-Response Pattern)
+AgentLine — SignalWire Events Router (Hosted LLM Pattern)
 Voice Architecture for US numbers:
   STT: SignalWire <Gather input="speech"> (real-time)
-  LLM: Agent's own LLM via webhook (we POST speech, they return response)
+  LLM: Internal Hosted LLM (we pass speech to our LLM, generate response)
   TTS: SignalWire <Say> (instant)
 
-  Flow: caller speaks → <Gather> STT → POST to webhook → agent returns
-  {"text": "..."} → <Say> response → <Gather> next turn.
-
-  This matches AgentPhone's architecture — no polling needed.
-  If no webhook is configured, server-side LLM handles the call.
+  Flow: caller speaks → <Gather> STT → Internal LLM generates response
+  → <Say> response → <Gather> next turn.
 """
 
 import asyncio
@@ -24,7 +21,6 @@ from fastapi.responses import Response
 
 from agentline.config import settings
 from agentline.database import get_db_conn
-from agentline.webhook_dispatcher import dispatch_webhook
 from agentline.voice.llm import llm_response
 
 logger = logging.getLogger(__name__)
@@ -113,23 +109,27 @@ def _parse_transcript(raw) -> list:
     return []
 
 
-async def _dispatch_speech_webhook(
-    account_id: str, agent_id: str, call_id: str,
-    provider_call_id: str, speech_text: str, call_row: dict
-):
-    try:
-        payload = {
-            "event": "call.speech_transcribed",
-            "call_id": call_id,
-            "provider_call_id": provider_call_id,
-            "from_number": call_row["from_number"],
-            "to_number": call_row["to_number"],
-            "text": speech_text,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-        await dispatch_webhook(account_id, agent_id, payload)
-    except Exception as e:
-        logger.error("Background webhook dispatch failed: %s", e)
+async def _generate_hosted_llm_response(agent: dict, transcript: list, call_id: str) -> str:
+    """Generate response internally for hosted mode agents."""
+    logger.info("Call %s — using Hosted Mode internal LLM", call_id)
+    system_prompt = (
+        (agent.get("system_prompt") if agent else None)
+        or "You are a helpful voice assistant. Keep responses brief and conversational."
+    )
+    model_tier = (agent.get("model_tier") if agent else None) or "balanced"
+
+    chat_history = []
+    for entry in transcript:
+        # We need to map human -> user and agent -> assistant
+        role = "user" if entry.get("role") == "human" else "assistant"
+        chat_history.append({"role": role, "content": entry.get("text", "")})
+
+    agent_reply = await llm_response(system_prompt, chat_history, model_tier)
+    logger.info("Call %s — Hosted Mode LLM response: %s", call_id, agent_reply[:80])
+    return agent_reply
+
+
+
 
 
 @router.post("/answer/{call_id}")
@@ -159,26 +159,18 @@ async def signalwire_answer(request: Request, call_id: str):
 
 
 # ────────────────────────────────────────────────────────────
-# Voice — Gather Callback (Webhook-Response Pattern)
-# Like AgentPhone: POST speech to agent's webhook, agent returns
-# {"text": "..."} in the HTTP response body. No polling, no /speak.
+# Voice — Gather Callback (Hosted LLM Pattern)
 # ────────────────────────────────────────────────────────────
-
-WEBHOOK_TIMEOUT = 25  # seconds to wait for webhook response
 
 @router.post("/gathered/{call_id}")
 async def signalwire_gathered(request: Request, call_id: str):
     """
-    Real-time speech handler — webhook-response pattern.
+    Real-time speech handler — hosted LLM pattern.
 
-    Flow (identical to AgentPhone):
+    Flow:
       1. SignalWire transcribes speech in real-time (SpeechResult)
-      2. POST speech + conversation history to agent's webhook
-      3. Agent processes with their own LLM and returns {"text": "..."}
-      4. We speak the response and listen for next speech
-
-    This is ONE HTTP round-trip — no polling, no /speak needed.
-    Latency: ~2-4 seconds (webhook processing time).
+      2. We pass speech + conversation history to our internal hosted LLM
+      3. We speak the response and listen for next speech
     """
     form = await request.form()
     speech_text = form.get("SpeechResult", "").strip()
@@ -222,33 +214,8 @@ async def signalwire_gathered(request: Request, call_id: str):
             "timestamp": entry.get("timestamp", ""),
         })
 
-    # ── Step 2: POST to agent's webhook and get response ──
-    agent_reply = await _call_agent_webhook(
-        call["account_id"],
-        call["agent_id"],
-        call_id,
-        call_sid or call.get("provider_call_id", ""),
-        speech_text,
-        recent_history,
-        call,
-    )
-
-    # ── Step 3: Fallback to server-side LLM if webhook failed ──
-    if not agent_reply:
-        logger.warning("Call %s — webhook returned no response, using LLM fallback", call_id)
-        system_prompt = (
-            (agent.get("system_prompt") if agent else None)
-            or "You are a helpful voice assistant. Keep responses brief and conversational."
-        )
-        model_tier = (agent.get("model_tier") if agent else None) or "balanced"
-
-        chat_history = []
-        for entry in transcript:
-            role = "user" if entry.get("role") == "human" else "assistant"
-            chat_history.append({"role": role, "content": entry.get("text", "")})
-
-        agent_reply = await llm_response(system_prompt, chat_history, model_tier)
-        logger.info("Call %s — LLM fallback: %s", call_id, agent_reply[:80])
+    # ── Step 2: Get Agent Response (Hosted Mode) ──
+    agent_reply = await _generate_hosted_llm_response(agent, transcript, call_id)
 
     # ── Step 4: Save agent reply to transcript ──
     transcript.append({
@@ -267,107 +234,7 @@ async def signalwire_gathered(request: Request, call_id: str):
     return _xml(xml)
 
 
-async def _call_agent_webhook(
-    account_id: str,
-    agent_id: str,
-    call_id: str,
-    call_sid: str,
-    speech_text: str,
-    recent_history: list,
-    call: dict,
-) -> str | None:
-    """
-    POST speech to agent's webhook and return the response text.
 
-    Follows AgentPhone's pattern:
-    - POST event with channel="voice", transcript, recentHistory
-    - Agent returns {"text": "response text"} in the HTTP body
-    - We use that text as the reply to speak to the caller
-
-    Returns None if no webhook configured or webhook fails.
-    """
-    async with get_db_conn() as db:
-        # Try agent-level webhook first
-        webhook = None
-        if agent_id:
-            webhook = await db.fetchrow(
-                "SELECT * FROM webhooks WHERE agent_id = $1", agent_id
-            )
-        # Fall back to account-level
-        if not webhook:
-            webhook = await db.fetchrow(
-                "SELECT * FROM webhooks WHERE account_id = $1 AND agent_id IS NULL",
-                account_id,
-            )
-
-    if not webhook:
-        logger.info("Call %s — no webhook configured, will use LLM fallback", call_id)
-        return None
-
-    # Build payload matching AgentPhone's webhook format
-    payload = {
-        "event": "agent.message",
-        "channel": "voice",
-        "agentId": agent_id,
-        "callId": call_id,
-        "callSid": call_sid,
-        "data": {
-            "transcript": speech_text,
-            "fromNumber": call.get("from_number", ""),
-            "toNumber": call.get("to_number", ""),
-            "direction": call.get("direction", "outbound"),
-        },
-        "recentHistory": recent_history,
-    }
-
-    payload_bytes = json.dumps(payload, default=str).encode("utf-8")
-    import hmac as _hmac
-    import hashlib as _hashlib
-    signature = _hmac.new(
-        webhook["secret"].encode("utf-8"),
-        payload_bytes,
-        _hashlib.sha256,
-    ).hexdigest()
-
-    try:
-        async with httpx.AsyncClient(timeout=WEBHOOK_TIMEOUT) as client:
-            response = await client.post(
-                webhook["url"],
-                content=payload_bytes,
-                headers={
-                    "Content-Type": "application/json",
-                    "X-AgentLine-Signature": f"sha256={signature}",
-                    "X-AgentLine-Event": "agent.message",
-                },
-            )
-
-        if response.status_code == 200:
-            try:
-                body = response.json()
-                reply_text = body.get("text", "").strip()
-                if reply_text:
-                    logger.info("Call %s — webhook response: %s", call_id, reply_text[:80])
-                    return reply_text
-
-                # Check for hangup action
-                if body.get("hangup") or body.get("action") == "hangup":
-                    logger.info("Call %s — webhook requested hangup", call_id)
-                    return "Goodbye! Have a great day."
-
-            except (json.JSONDecodeError, ValueError):
-                logger.warning("Call %s — webhook returned non-JSON response", call_id)
-        else:
-            logger.warning(
-                "Call %s — webhook returned status %d",
-                call_id, response.status_code,
-            )
-
-    except httpx.TimeoutException:
-        logger.warning("Call %s — webhook timed out after %ds", call_id, WEBHOOK_TIMEOUT)
-    except Exception as e:
-        logger.error("Call %s — webhook error: %s", call_id, str(e))
-
-    return None
 
 
 @router.post("/recorded/{call_id}")
@@ -409,18 +276,32 @@ async def signalwire_recording_callback(request: Request, call_id: str):
             json.dumps(transcript), call_id,
         )
 
-    asyncio.create_task(_dispatch_speech_webhook(
-        call["account_id"], call["agent_id"],
-        call_id, call_sid or call.get("provider_call_id", ""),
-        speech_text, call,
-    ))
+    # Build recent history
+    recent_history = []
+    for entry in transcript[-10:]:
+        recent_history.append({
+            "direction": "inbound" if entry.get("role") == "human" else "outbound",
+            "content": entry.get("text", ""),
+            "timestamp": entry.get("timestamp", ""),
+        })
 
-    wait_url = f"{settings.base_url_clean}/signalwire/wait/{call_id}"
-    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Pause length="3"/>
-    <Redirect method="POST">{wait_url}</Redirect>
-</Response>"""
+    # ── Step 2: Get Agent Response (Hosted Mode) ──
+    agent_reply = await _generate_hosted_llm_response(agent, transcript, call_id)
+
+    # Save agent reply
+    transcript.append({
+        "role": "agent",
+        "text": agent_reply,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+    async with get_db_conn() as db:
+        await db.execute(
+            "UPDATE calls SET transcript=$1 WHERE id=$2",
+            json.dumps(transcript), call_id,
+        )
+
+    # Return agent's response + listen for next speech
+    xml = _gather_xml(call_id, agent_reply)
     return _xml(xml)
 
 
@@ -492,7 +373,7 @@ async def signalwire_wait_for_response(request: Request, call_id: str):
 
 
 @router.post("/sms")
-async def signalwire_sms_webhook(request: Request):
+async def signalwire_sms_callback(request: Request):
     form = await request.form()
     from_number = form.get("From", "")
     to_number = form.get("To", "")
@@ -541,17 +422,6 @@ async def signalwire_sms_webhook(request: Request):
             from_number, to_number, text,
         )
 
-    await dispatch_webhook(number["account_id"], number["agent_id"], {
-        "event": "agent.message",
-        "channel": msg_type,
-        "agent_id": number["agent_id"],
-        "number_id": number["id"],
-        "from_number": from_number,
-        "to_number": to_number,
-        "content": text,
-        "conversation_id": conv_id,
-    })
-
     return _xml("<Response/>")
 
 
@@ -578,14 +448,6 @@ async def signalwire_hangup(request: Request, call_id: str):
                    WHERE id=$2 AND status!='completed'""",
                 int(duration) if str(duration).isdigit() else 0, call_id,
             )
-
-        if call:
-            await dispatch_webhook(call["account_id"], call["agent_id"], {
-                "event": "call.completed",
-                "call_id": call_id,
-                "duration": int(duration) if str(duration).isdigit() else 0,
-                "hangup_cause": call_status,
-            })
 
     return _xml("<Response/>")
 
@@ -634,13 +496,7 @@ async def signalwire_inbound_call(request: Request):
     if agent and agent.get("initial_greeting"):
         greeting = agent["initial_greeting"]
 
-    if number:
-        await dispatch_webhook(number["account_id"], number["agent_id"], {
-            "event": "call.inbound",
-            "call_id": call_id,
-            "from_number": from_number,
-            "to_number": to_number,
-        })
+
 
     xml = _listen_xml(call_id, greeting)
     return _xml(xml)

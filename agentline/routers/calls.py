@@ -21,8 +21,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from agentline.auth_middleware import get_current_account
 from agentline.database import get_db, get_db_conn
 from agentline.models.call import CallRequest
-from agentline.plivo_client import initiate_call as plivo_initiate_call
-from agentline.plivo_client import hangup_call as plivo_hangup_call
 from agentline.signalwire_client import initiate_call as signalwire_initiate_call
 from agentline.signalwire_client import hangup_call as signalwire_hangup_call
 
@@ -75,30 +73,19 @@ async def create_call(
         number["phone_number"], body.to_number, system_prompt, now,
     )
 
-    # Route based on the SOURCE number's provider (country stored at provision time)
-    # A SignalWire-owned number must use SignalWire to place calls, and vice versa.
-    use_signalwire = number["country"] == "US"
-
     try:
-        if use_signalwire:
-            provider_call_id = await signalwire_initiate_call(
-                from_number=number["phone_number"],
-                to_number=body.to_number,
-                call_id=call_id,
-            )
-        else:
-            provider_call_id = await plivo_initiate_call(
-                from_number=number["phone_number"],
-                to_number=body.to_number,
-                call_id=call_id,
-            )
+        provider_call_id = await signalwire_initiate_call(
+            from_number=number["phone_number"],
+            to_number=body.to_number,
+            call_id=call_id,
+        )
     except Exception as e:
         await db.execute("UPDATE calls SET status='failed' WHERE id=$1", call_id)
         raise HTTPException(502, f"Failed to initiate call: {str(e)}")
 
     await db.execute(
         "UPDATE calls SET provider_call_id=$1, status='in-progress' WHERE id=$2",
-        provider_call_id, call_id,
+        provider_call_id, call_id
     )
 
     return {
@@ -223,18 +210,8 @@ async def hangup_call(
         )
         return {"call_id": call_id, "status": "completed", "message": "Call was never connected, marked as completed."}
 
-    # Determine provider from the number's country (US = SignalWire, else Plivo)
-    number = await db.fetchrow(
-        "SELECT country FROM phone_numbers WHERE id=$1",
-        call["number_id"],
-    )
-    use_signalwire = number and number["country"] == "US"
-
     try:
-        if use_signalwire:
-            await signalwire_hangup_call(provider_call_id)
-        else:
-            await plivo_hangup_call(provider_call_id)
+        await signalwire_hangup_call(provider_call_id)
     except Exception as e:
         logger.warning("Provider hangup failed for call %s: %s (marking completed anyway)", call_id, e)
 

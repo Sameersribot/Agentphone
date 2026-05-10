@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from agentline.database import init_db, close_db
 from agentline.redis_client import init_redis, close_redis
-from agentline.routers import auth, agents, numbers, messages, calls, webhooks, usage, plivo_events, signalwire_events, events
+from agentline.routers import auth, agents, numbers, messages, calls, usage, signalwire_events
 
 # Configure logging
 logging.basicConfig(
@@ -58,11 +58,8 @@ app.include_router(agents.router)
 app.include_router(numbers.router)
 app.include_router(messages.router)
 app.include_router(calls.router)
-app.include_router(webhooks.router)
 app.include_router(usage.router)
-app.include_router(plivo_events.router)
 app.include_router(signalwire_events.router)
-app.include_router(events.router)
 
 
 @app.get("/", tags=["Health"])
@@ -71,7 +68,7 @@ async def root():
         "service": "AgentLine",
         "version": "0.2.0",
         "status": "operational",
-        "telephony_providers": ["plivo", "signalwire"],
+        "telephony_providers": ["signalwire"],
     }
 
 
@@ -95,14 +92,6 @@ async def debug_urls():
     return {
         "base_url_raw": settings.BASE_URL,
         "base_url_clean": settings.base_url_clean,
-        "plivo": {
-            "answer_url": f"{settings.base_url_clean}/plivo/answer/call_TEST",
-            "record_url": f"{settings.base_url_clean}/plivo/recorded/call_TEST",
-            "wait_url": f"{settings.base_url_clean}/plivo/wait/call_TEST",
-            "hangup_url": f"{settings.base_url_clean}/plivo/hangup/call_TEST",
-            "inbound_url": f"{settings.base_url_clean}/plivo/inbound",
-            "sms_url": f"{settings.base_url_clean}/plivo/sms",
-        },
         "signalwire": {
             "answer_url": f"{settings.base_url_clean}/signalwire/answer/call_TEST",
             "record_url": f"{settings.base_url_clean}/signalwire/recorded/call_TEST",

@@ -15,7 +15,7 @@ import bcrypt
 
 from agentline.database import get_db
 from agentline.email_client import send_otp, verify_otp
-from agentline.plivo_client import provision_number
+from agentline.signalwire_client import provision_number
 
 router = APIRouter(prefix="/v0/agent", tags=["Auth"])
 
@@ -108,9 +108,9 @@ async def verify(body: VerifyRequest, db=Depends(get_db)):
         agent_name,
     )
 
-    # --- Provision Indian phone number via Plivo ---
+    # --- Provision US phone number via SignalWire ---
     try:
-        number_data = await provision_number(country="IN", agent_id=agent_id)
+        number_data = await provision_number(country="US", number_type="local", agent_id=agent_id)
     except Exception as e:
         logging.getLogger(__name__).warning("Auto-provision failed during signup: %s", e)
         number_data = None
@@ -124,7 +124,7 @@ async def verify(body: VerifyRequest, db=Depends(get_db)):
             await db.execute(
                 """INSERT INTO phone_numbers
                    (id, account_id, agent_id, provider_id, phone_number, country, status)
-                   VALUES ($1, $2, $3, $4, $5, 'IN', 'active')""",
+                   VALUES ($1, $2, $3, $4, $5, 'US', 'active')""",
                 number_id,
                 account_id,
                 agent_id,

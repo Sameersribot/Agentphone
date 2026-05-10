@@ -12,7 +12,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from agentline.auth_middleware import get_current_account
 from agentline.database import get_db
 from agentline.models.number import NumberProvision, NumberOut
-from agentline.plivo_client import provision_number as plivo_provision_number, release_number as plivo_release_number, list_plivo_numbers
 from agentline.signalwire_client import provision_number as signalwire_provision_number, release_number as signalwire_release_number
 
 logger = logging.getLogger(__name__)
@@ -28,15 +27,18 @@ async def provision(
 ):
     """
     Search for and buy a phone number, then attach it to an agent.
-    Routes to SignalWire for US numbers, Plivo for all others.
+    Only SignalWire (US) numbers are supported.
     Each agent can only have ONE active number.
 
     Request body:
       - agent_id: str (required)
-      - country: str (default "IN") — use "US" for US numbers via SignalWire
-      - number_type: "local" | "mobile" | "tollfree" | "fixed" | "national"
-      - pattern: optional area code filter (e.g. "22" for Mumbai, "212" for NYC)
+      - country: str (must be "US")
+      - number_type: "local" | "tollfree"
+      - pattern: optional area code filter (e.g. "212" for NYC)
     """
+    if body.country.upper() != "US":
+        raise HTTPException(400, "Only US numbers via SignalWire are supported.")
+
     # Verify agent belongs to this account
     agent = await db.fetchrow(
         "SELECT * FROM agents WHERE id = $1 AND account_id = $2",
@@ -58,31 +60,16 @@ async def provision(
             "Release it first with DELETE /v1/numbers/{number_id} before provisioning a new one.",
         )
 
-    # Provision via Plivo or SignalWire
+    # Provision via SignalWire
     try:
-        if body.country.upper() == "US":
-            number_data = await signalwire_provision_number(
-                country=body.country,
-                number_type=body.number_type,
-                pattern=body.pattern,
-                agent_id=body.agent_id,
-            )
-        else:
-            number_data = await plivo_provision_number(
-                country=body.country,
-                number_type=body.number_type,
-                pattern=body.pattern,
-                agent_id=body.agent_id,
-            )
+        number_data = await signalwire_provision_number(
+            country=body.country,
+            number_type=body.number_type,
+            pattern=body.pattern,
+            agent_id=body.agent_id,
+        )
     except Exception as e:
-        error_msg = str(e)
-        if "compliance" in error_msg.lower() or "kyc" in error_msg.lower():
-            raise HTTPException(
-                403,
-                f"KYC/compliance issue: {error_msg}. "
-                "Complete compliance in Plivo Console → Phone Numbers → Compliance.",
-            )
-        raise HTTPException(502, f"Failed to provision number: {error_msg}")
+        raise HTTPException(502, f"Failed to provision number: {str(e)}")
 
     # Save to database
     number_id = f"num_{secrets.token_urlsafe(12)}"
@@ -109,16 +96,12 @@ async def provision(
         )
         # Try to release the number we just bought since DB save failed
         try:
-            if body.country.upper() == "US":
-                await signalwire_release_number(number_data["provider_id"])
-            else:
-                await plivo_release_number(number_data["provider_id"])
+            await signalwire_release_number(number_data["provider_id"])
         except Exception:
             pass
-        provider_name = "SignalWire" if body.country.upper() == "US" else "Plivo"
         raise HTTPException(
             500,
-            f"Number {number_data['phone_number']} was provisioned on {provider_name} but failed to save to database: {e}. "
+            f"Number {number_data['phone_number']} was provisioned on SignalWire but failed to save to database: {e}. "
             "The number has been released. Please try again.",
         )
 
@@ -153,18 +136,6 @@ async def list_numbers(
     return [dict(r) for r in rows]
 
 
-@router.get("/available")
-async def list_available(
-    account=Depends(get_current_account),
-):
-    """
-    List numbers currently rented on the Plivo account.
-    Useful for debugging or manually attaching numbers.
-    """
-    numbers = await list_plivo_numbers()
-    return {"plivo_numbers": numbers}
-
-
 @router.get("/{number_id}")
 async def get_number(
     number_id: str,
@@ -190,12 +161,11 @@ async def attach_existing_number(
     db=Depends(get_db),
 ):
     """
-    Manually attach a number that was bought directly from Plivo or SignalWire dashboard.
-    Use this when auto-provisioning fails due to KYC or inventory issues.
+    Manually attach a number that was bought directly from SignalWire dashboard.
     Each agent can only have ONE active number.
 
     Query params:
-      - phone_number: E.164 format (e.g. "+919876543210" or "+12125551234")
+      - phone_number: E.164 format (e.g. "+12125551234")
       - agent_id: agent to attach to
     """
     agent = await db.fetchrow(
@@ -226,6 +196,9 @@ async def attach_existing_number(
     if existing:
         raise HTTPException(409, f"Number {phone_number} is already attached (id: {existing['id']}).")
 
+    if not phone_number.startswith("+1"):
+        raise HTTPException(400, "Only US numbers (+1) via SignalWire are supported.")
+
     number_id = f"num_{secrets.token_urlsafe(12)}"
     provider_id = phone_number.lstrip("+")
 
@@ -239,7 +212,7 @@ async def attach_existing_number(
             agent_id,
             provider_id,
             phone_number,
-            "IN" if phone_number.startswith("+91") else "US",
+            "US",
         )
         logger.info("Manually attached number %s to agent %s", phone_number, agent_id)
     except Exception as e:
@@ -251,7 +224,7 @@ async def attach_existing_number(
         "agent_id": agent_id,
         "phone_number": phone_number,
         "status": "active",
-        "message": f"Number attached. Configure its Answer URL in {'SignalWire' if phone_number.startswith('+1') else 'Plivo'} dashboard to point to your server.",
+        "message": "Number attached. Configure its Answer URL in SignalWire dashboard to point to your server.",
     }
 
 
@@ -305,7 +278,7 @@ async def release(
     account=Depends(get_current_account),
     db=Depends(get_db),
 ):
-    """Release a phone number back to its provider (Plivo or SignalWire)."""
+    """Release a phone number back to its provider (SignalWire)."""
     row = await db.fetchrow(
         "SELECT * FROM phone_numbers WHERE id = $1 AND account_id = $2",
         number_id,
@@ -315,10 +288,7 @@ async def release(
         raise HTTPException(404, "Number not found.")
 
     try:
-        if row["country"] == "US":
-            await signalwire_release_number(row["provider_id"])
-        else:
-            await plivo_release_number(row["provider_id"])
+        await signalwire_release_number(row["provider_id"])
     except Exception:
         pass  # Best effort
 
