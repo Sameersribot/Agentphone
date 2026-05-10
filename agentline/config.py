@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
     OPENAI_BASE_URL: str = "https://api.inceptionlabs.ai/v1"
 
+    # Voice Pipeline — STT (Deepgram)
+    DEEPGRAM_API_KEY: str = ""
+
     # App
     SECRET_KEY: str = "change-me-in-production"
     BASE_URL: str = "http://localhost:8000"

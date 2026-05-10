@@ -114,6 +114,20 @@ CREATE TABLE IF NOT EXISTS call_responses (
 );
 
 
+-- Event Mailbox: server-side event queue for agents that can't expose
+-- a public webhook URL. Events are stored temporarily and pulled
+-- by agents via GET /v1/events.
+CREATE TABLE IF NOT EXISTS event_mailbox (
+    id          SERIAL PRIMARY KEY,
+    event_id    TEXT UNIQUE NOT NULL,
+    account_id  TEXT REFERENCES accounts(id) ON DELETE CASCADE,
+    agent_id    TEXT REFERENCES agents(id) ON DELETE CASCADE,
+    event_type  TEXT NOT NULL,
+    payload     JSONB NOT NULL DEFAULT '{}',
+    created_at  TIMESTAMPTZ DEFAULT now()
+);
+
+
 -- Performance indexes
 CREATE INDEX idx_api_keys_prefix ON api_keys(key_prefix) WHERE revoked_at IS NULL;
 CREATE INDEX idx_agents_account ON agents(account_id);
@@ -127,3 +141,6 @@ CREATE INDEX idx_conversations_number_contact ON conversations(number_id, contac
 CREATE INDEX idx_webhooks_agent ON webhooks(agent_id);
 CREATE INDEX idx_webhooks_account ON webhooks(account_id) WHERE agent_id IS NULL;
 CREATE INDEX idx_accounts_supabase ON accounts(supabase_user_id) WHERE supabase_user_id IS NOT NULL;
+CREATE INDEX idx_event_mailbox_account ON event_mailbox(account_id, created_at ASC);
+CREATE INDEX idx_event_mailbox_agent ON event_mailbox(account_id, agent_id, created_at ASC);
+CREATE INDEX idx_event_mailbox_expiry ON event_mailbox(account_id, created_at);

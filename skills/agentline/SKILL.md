@@ -35,15 +35,24 @@ Your default agent ID is `$AGENTLINE_AGENT_ID`. Use this for all calls and SMS u
 
 ## Voice Modes
 
-AgentLine supports two voice modes, just like AgentPhone:
+AgentLine supports three voice modes:
 
 ### 1. Hosted Mode (default for outbound calls)
 The server runs the LLM using the agent's `system_prompt`. No webhook or external server needed. Just create the call and the AI handles everything.
 
-### 2. Webhook Mode
-Speech is transcribed in real-time and POSTed to your configured webhook URL as `agent.message` events with `channel: "voice"`. Your server processes with your own LLM and returns `{"text": "response text"}` in the HTTP response body. AgentLine speaks that text to the caller.
+### 2. Relay Mode (agent controls the conversation — **recommended for AI agents**)
+Your agent controls the conversation via API. No webhook needed, no public URL needed.
+This works perfectly from localhost, behind firewalls, or anywhere.
 
-This is the same pattern as AgentPhone — **one HTTP round-trip per conversation turn**.
+**Flow:**
+1. Create a call → `POST /v1/calls`
+2. Poll for events → `GET /v1/events?agent_id=$AGENTLINE_AGENT_ID&wait=true`
+3. When you receive a `call.speech_received` event, process with your LLM
+4. Send response → `POST /v1/calls/{call_id}/speak`
+5. Repeat until call ends
+
+### 3. Webhook Mode (external server)
+Speech is transcribed and POSTed to a configured webhook URL. Only use this if you have a public server. **Not needed for most agents.**
 
 ---
 
@@ -66,41 +75,102 @@ curl -X POST $AGENTLINE_URL/v1/calls \
 
 The AI handles the full conversation. Poll `GET /v1/calls/<call_id>` until `status` is `completed` to get the transcript.
 
-### Webhook Mode (your LLM controls the conversation)
-If you have a webhook configured, speech is sent there instead. Your webhook receives:
+### Relay Mode (your LLM controls the conversation — NO public URL needed)
 
+**Step 1: Create the call**
+```bash
+curl -X POST $AGENTLINE_URL/v1/calls \
+  -H "Authorization: Bearer $AGENTLINE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent_id": "$AGENTLINE_AGENT_ID",
+    "to_number": "+1XXXXXXXXXX"
+  }'
+# Returns: {"id": "call_xxx", ...}
+```
+
+**Step 2: Poll for events (long-poll, holds 25 seconds)**
+```bash
+curl "$AGENTLINE_URL/v1/events?agent_id=$AGENTLINE_AGENT_ID&wait=true" \
+  -H "Authorization: Bearer $AGENTLINE_API_KEY"
+```
+
+Returns events like:
 ```json
 {
-  "event": "agent.message",
-  "channel": "voice",
-  "agentId": "agt_...",
-  "callId": "call_...",
-  "data": {
-    "transcript": "Hello, who is this?",
-    "fromNumber": "+14155551234",
-    "toNumber": "+14155559999",
-    "direction": "outbound"
-  },
-  "recentHistory": [
-    {"direction": "outbound", "content": "Hi! How can I help?", "timestamp": "..."},
-    {"direction": "inbound", "content": "Hello, who is this?", "timestamp": "..."}
-  ]
+  "events": [
+    {
+      "event_id": "evt_xxx",
+      "event_type": "call.speech_received",
+      "data": {
+        "call_id": "call_xxx",
+        "speech_text": "Hello, who is this?",
+        "from_number": "+14155551234",
+        "direction": "outbound"
+      }
+    }
+  ],
+  "pending": 1
 }
 ```
 
-Your webhook must return:
-```json
-{"text": "Hi! This is the scheduling assistant. I wanted to check about a meeting for Tuesday."}
-```
-
-That text is spoken to the caller immediately. **No polling, no /speak call — just return the response in the webhook body.**
-
-### Configure a Webhook
+**Step 3: Send your response**
 ```bash
-curl -X POST $AGENTLINE_URL/v1/webhooks \
+curl -X POST $AGENTLINE_URL/v1/calls/call_xxx/speak \
   -H "Authorization: Bearer $AGENTLINE_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"url": "https://your-server.com/voice-webhook", "agent_id": "$AGENTLINE_AGENT_ID"}'
+  -d '{"text": "Hi! This is the scheduling assistant."}'
+```
+
+**Step 4: Acknowledge events you've processed**
+```bash
+curl -X POST $AGENTLINE_URL/v1/events/ack \
+  -H "Authorization: Bearer $AGENTLINE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"event_ids": ["evt_xxx"]}'
+```
+
+**Step 5: Loop back to Step 2 until call ends**
+
+That's it. No webhook URL, no ngrok, no public server needed.
+
+---
+
+## Events API (Mailbox Mode)
+
+Every agent automatically has an event mailbox. All events (speech, SMS, call status) are queued server-side and you pull them via API.
+
+### Poll for Events
+```bash
+# Instant (returns immediately)
+curl "$AGENTLINE_URL/v1/events?agent_id=$AGENTLINE_AGENT_ID" \
+  -H "Authorization: Bearer $AGENTLINE_API_KEY"
+
+# Long-poll (holds up to 25 seconds for new events)
+curl "$AGENTLINE_URL/v1/events?agent_id=$AGENTLINE_AGENT_ID&wait=true" \
+  -H "Authorization: Bearer $AGENTLINE_API_KEY"
+```
+
+### Event Types
+| Event | When | Key Fields |
+|-------|------|------------|
+| `call.speech_received` | Person spoke on a call | `call_id`, `speech_text` |
+| `call.inbound` | Someone called your number | `call_id`, `from_number` |
+| `call.completed` | Call ended | `call_id`, `duration` |
+| `agent.message` | Inbound SMS/MMS | `from_number`, `content` |
+
+### Acknowledge Events
+```bash
+curl -X POST $AGENTLINE_URL/v1/events/ack \
+  -H "Authorization: Bearer $AGENTLINE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"event_ids": ["evt_xxx", "evt_yyy"]}'
+```
+
+### Clear All Events
+```bash
+curl -X DELETE "$AGENTLINE_URL/v1/events?agent_id=$AGENTLINE_AGENT_ID" \
+  -H "Authorization: Bearer $AGENTLINE_API_KEY"
 ```
 
 ---
@@ -135,8 +205,6 @@ curl -X POST $AGENTLINE_URL/v1/calls \
 curl -X POST $AGENTLINE_URL/v1/calls/<call_id>/hangup \
   -H "Authorization: Bearer $AGENTLINE_API_KEY"
 ```
-
-Or from your webhook, return: `{"text": "Goodbye!", "hangup": true}`
 
 ---
 
@@ -208,9 +276,24 @@ Note: Each agent can only have ONE active phone number.
 
 ---
 
+## Webhook Mode (optional — only if you have a public server)
+
+If you have a public server and prefer push-based delivery, you can configure a webhook:
+
+```bash
+curl -X POST $AGENTLINE_URL/v1/webhooks \
+  -H "Authorization: Bearer $AGENTLINE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://your-public-server.com/voice-webhook", "agent_id": "$AGENTLINE_AGENT_ID"}'
+```
+
+**Note:** If no webhook is configured, events are automatically queued in the event mailbox. You don't need to configure anything — just use `GET /v1/events`.
+
+---
+
 ## Legacy API (still works)
 
-The `/listen` and `/speak` polling endpoints still work for backwards compatibility, but the webhook-response pattern is preferred for lower latency.
+The `/listen` and `/speak` polling endpoints still work for backwards compatibility, but the events API is preferred for cleaner integration.
 
 ---
 
@@ -220,7 +303,8 @@ The `/listen` and `/speak` polling endpoints still work for backwards compatibil
 2. **Always confirm with the user before placing calls** — never auto-dial without explicit consent.
 3. **Use `$AGENTLINE_AGENT_ID` by default** — only look up agents if the user asks to manage them.
 4. **For hosted mode** — just create the call with a system_prompt. The AI handles everything.
-5. **For webhook mode** — configure a webhook, return `{"text": "..."}` in the response body. That's it.
+5. **For relay mode** — poll `GET /v1/events?wait=true`, respond with `/speak`. No webhook needed.
 6. **Keep voice responses short** — under 30 words per response. The caller is listening, not reading.
 7. **If a call fails with 400 "Agent has no active phone number"**, provision a number first.
 8. **SMS supports MMS** — pass `media_url` to attach images.
+9. **Events auto-expire after 5 minutes** — always poll regularly during active calls.

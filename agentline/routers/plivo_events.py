@@ -74,21 +74,34 @@ def _listen_xml(call_id: str, prompt: str = "I am listening.") -> str:
 
 async def transcribe_with_deepgram(recording_url: str) -> str:
     """
-    Send a recording URL to Deepgram's pre-recorded API.
+    Fetch recording from Plivo (requires auth) and send to Deepgram's pre-recorded API.
     Returns the transcribed text.
     """
     try:
+        if not settings.DEEPGRAM_API_KEY:
+            logger.error("DEEPGRAM_API_KEY is not set in environment.")
+            return ""
+
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
+            # 1. Download recording from Plivo (requires auth)
+            rec_response = await client.get(
+                recording_url,
+                auth=(settings.PLIVO_AUTH_ID, settings.PLIVO_AUTH_TOKEN),
+            )
+            rec_response.raise_for_status()
+            audio_data = rec_response.content
+
+            # 2. Send raw audio buffer to Deepgram
+            dg_response = await client.post(
                 "https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true&language=en",
                 headers={
                     "Authorization": f"Token {settings.DEEPGRAM_API_KEY}",
-                    "Content-Type": "application/json",
+                    "Content-Type": "audio/wav",  # Plivo typically returns wav for recordings
                 },
-                json={"url": recording_url},
+                content=audio_data,
             )
-            response.raise_for_status()
-            data = response.json()
+            dg_response.raise_for_status()
+            data = dg_response.json()
 
             # Extract transcript from Deepgram response
             transcript = (
@@ -98,6 +111,9 @@ async def transcribe_with_deepgram(recording_url: str) -> str:
                 .get("transcript", "")
             )
             return transcript.strip()
+    except httpx.HTTPStatusError as e:
+        logger.error("HTTP error during transcription (status %s): %s", e.response.status_code, e.response.text)
+        return ""
     except Exception as e:
         logger.error("Deepgram transcription failed: %s", e)
         return ""
