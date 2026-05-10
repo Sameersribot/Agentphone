@@ -29,7 +29,7 @@ class Settings(BaseSettings):
 
     # Voice Pipeline — LLM
     OPENAI_API_KEY: str = ""
-    OPENAI_BASE_URL: str = "https://api.inceptionlabs.ai/v1"
+    OPENAI_BASE_URL: str = "https://api.openai.com/v1"  # Default to OpenAI, or set to Inception Labs
 
     # Voice Pipeline — STT (Deepgram)
     DEEPGRAM_API_KEY: str = ""

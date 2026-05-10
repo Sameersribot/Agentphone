@@ -189,7 +189,7 @@ async def plivo_recording_callback(request: Request, call_id: str):
     # Save to transcript
     async with get_db_conn() as db:
         call = await db.fetchrow("""
-            SELECT c.*, a.mode, a.system_prompt, a.model_tier 
+            SELECT c.*, a.voice_mode, a.system_prompt, a.model_tier 
             FROM calls c 
             JOIN agents a ON c.agent_id = a.id 
             WHERE c.id=$1
@@ -208,7 +208,7 @@ async def plivo_recording_callback(request: Request, call_id: str):
             json.dumps(transcript), call_id,
         )
 
-    if call.get("mode") == "hosted":
+    if call.get("voice_mode") == "hosted":
         # Hosted Mode: AgentLine generates the response internally using the system prompt
         asyncio.create_task(_generate_hosted_llm_response(
             call_id=call_id,

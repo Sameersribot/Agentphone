@@ -17,11 +17,11 @@ client = openai.AsyncOpenAI(
     base_url=settings.OPENAI_BASE_URL,
 )
 
-# Model tier mapping — all tiers use Mercury-2 (it's fast enough for all)
+# Model tier mapping — all tiers use gpt-4o-mini (fast, cheap, reliable)
 MODEL_MAP = {
-    "turbo":    "mercury-2",
-    "balanced": "mercury-2",
-    "max":      "mercury-2",
+    "turbo":    "gpt-4o-mini",
+    "balanced": "gpt-4o-mini",
+    "max":      "gpt-4o",
 }
 
 
