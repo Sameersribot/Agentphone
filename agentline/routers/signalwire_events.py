@@ -118,13 +118,9 @@ async def _generate_hosted_llm_response(agent: dict, transcript: list, call_id: 
     )
     model_tier = (agent.get("model_tier") if agent else None) or "balanced"
 
-    chat_history = []
-    for entry in transcript:
-        # We need to map human -> user and agent -> assistant
-        role = "user" if entry.get("role") == "human" else "assistant"
-        chat_history.append({"role": role, "content": entry.get("text", "")})
-
-    agent_reply = await llm_response(system_prompt, chat_history, model_tier)
+    agent_reply = await llm_response(system_prompt, transcript, model_tier)
+    if not agent_reply:
+        agent_reply = "I'm sorry, I didn't catch that. Could you repeat?"
     logger.info("Call %s — Hosted Mode LLM response: %s", call_id, agent_reply[:80])
     return agent_reply
 
