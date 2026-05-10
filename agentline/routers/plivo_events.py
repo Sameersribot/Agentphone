@@ -28,6 +28,7 @@ from fastapi.responses import Response
 from agentline.config import settings
 from agentline.database import get_db_conn
 from agentline.webhook_dispatcher import dispatch_webhook
+from agentline.voice.llm import llm_response
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +188,12 @@ async def plivo_recording_callback(request: Request, call_id: str):
 
     # Save to transcript
     async with get_db_conn() as db:
-        call = await db.fetchrow("SELECT * FROM calls WHERE id=$1", call_id)
+        call = await db.fetchrow("""
+            SELECT c.*, a.mode, a.system_prompt, a.model_tier 
+            FROM calls c 
+            JOIN agents a ON c.agent_id = a.id 
+            WHERE c.id=$1
+        """, call_id)
         if not call:
             return _xml("<Response><Speak>Call not found.</Speak></Response>")
 
@@ -202,12 +208,21 @@ async def plivo_recording_callback(request: Request, call_id: str):
             json.dumps(transcript), call_id,
         )
 
-    # Dispatch to agent's webhook — fire-and-forget so we don't delay Plivo XML
-    asyncio.create_task(_dispatch_speech_webhook(
-        call["account_id"], call["agent_id"],
-        call_id, call_uuid or call.get("provider_call_id", ""),
-        speech_text, call,
-    ))
+    if call.get("mode") == "hosted":
+        # Hosted Mode: AgentLine generates the response internally using the system prompt
+        asyncio.create_task(_generate_hosted_llm_response(
+            call_id=call_id,
+            system_prompt=call.get("system_prompt", ""),
+            transcript=transcript,
+            model_tier=call.get("model_tier", "balanced")
+        ))
+    else:
+        # Relay Mode: Dispatch to agent's webhook (or mailbox) — fire-and-forget
+        asyncio.create_task(_dispatch_speech_webhook(
+            call["account_id"], call["agent_id"],
+            call_id, call_uuid or call.get("provider_call_id", ""),
+            speech_text, call,
+        ))
 
     # Enter wait loop for agent's response
     wait_url = f"{settings.base_url_clean}/plivo/wait/{call_id}"
@@ -463,6 +478,44 @@ async def _dispatch_speech_webhook(
         })
     except Exception as e:
         logger.error("Background webhook dispatch failed for call %s: %s", call_id, e)
+
+
+async def _generate_hosted_llm_response(
+    call_id: str,
+    system_prompt: str,
+    transcript: list,
+    model_tier: str
+):
+    """Generate LLM response internally for Hosted Mode and queue it for Plivo to speak."""
+    try:
+        # Generate response using Mercury-2
+        reply_text = await llm_response(system_prompt, transcript, model_tier)
+        
+        # Update transcript
+        transcript.append({
+            "role": "agent",
+            "text": reply_text,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+
+        async with get_db_conn() as db:
+            # 1. Update transcript in calls table
+            await db.execute(
+                "UPDATE calls SET transcript=$1 WHERE id=$2",
+                json.dumps(transcript), call_id
+            )
+
+            # 2. Queue the response so plivo_wait_for_response picks it up
+            response_id = f"resp_{secrets.token_urlsafe(12)}"
+            await db.execute(
+                """INSERT INTO call_responses (id, call_id, response_text, spoken)
+                   VALUES ($1, $2, $3, false)""",
+                response_id, call_id, reply_text
+            )
+            
+        logger.info("Call %s — Hosted LLM response queued: %s", call_id, reply_text)
+    except Exception as e:
+        logger.error("Hosted LLM response generation failed for call %s: %s", call_id, e)
 
 
 # ────────────────────────────────────────────────────────────
