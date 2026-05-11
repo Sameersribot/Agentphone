@@ -94,8 +94,7 @@ async def debug_urls():
         "base_url_clean": settings.base_url_clean,
         "signalwire": {
             "answer_url": f"{settings.base_url_clean}/signalwire/answer/call_TEST",
-            "record_url": f"{settings.base_url_clean}/signalwire/recorded/call_TEST",
-            "wait_url": f"{settings.base_url_clean}/signalwire/wait/call_TEST",
+            "gathered_url": f"{settings.base_url_clean}/signalwire/gathered/call_TEST",
             "hangup_url": f"{settings.base_url_clean}/signalwire/hangup/call_TEST",
             "inbound_url": f"{settings.base_url_clean}/signalwire/inbound",
             "sms_url": f"{settings.base_url_clean}/signalwire/sms",

@@ -9,13 +9,11 @@ Voice Architecture for US numbers:
   → <Say> response → <Gather> next turn.
 """
 
-import asyncio
 import secrets
 import json
 import logging
 from datetime import datetime, timezone
 
-import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
 
@@ -57,45 +55,6 @@ def _gather_xml(call_id: str, prompt: str = "I am listening.") -> str:
 </Response>"""
 
 
-def _listen_xml(call_id: str, prompt: str = "I am listening.") -> str:
-    """Legacy: speak + record. Kept for fallback but gather is preferred."""
-    record_url = f"{settings.base_url_clean}/signalwire/recorded/{call_id}"
-    return f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Say voice="alice">{_escape_xml(prompt)}</Say>
-    <Record action="{record_url}" method="POST"
-            maxLength="30" timeout="3" finishOnKey="#"
-            playBeep="false" />
-    <Say voice="alice">I did not hear anything. Goodbye.</Say>
-</Response>"""
-
-
-async def transcribe_with_deepgram(recording_url: str) -> str:
-    """Send a recording URL to Deepgram's pre-recorded API."""
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                "https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true&language=en",
-                headers={
-                    "Authorization": f"Token {settings.DEEPGRAM_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={"url": recording_url},
-            )
-            response.raise_for_status()
-            data = response.json()
-            transcript = (
-                data.get("results", {})
-                .get("channels", [{}])[0]
-                .get("alternatives", [{}])[0]
-                .get("transcript", "")
-            )
-            return transcript.strip()
-    except Exception as e:
-        logger.error("Deepgram transcription failed: %s", e)
-        return ""
-
-
 def _parse_transcript(raw) -> list:
     if not raw:
         return []
@@ -125,8 +84,9 @@ async def _generate_hosted_llm_response(agent: dict, transcript: list, call_id: 
     return agent_reply
 
 
-
-
+# ────────────────────────────────────────────────────────────
+# Voice — Outbound Call Answered
+# ────────────────────────────────────────────────────────────
 
 @router.post("/answer/{call_id}")
 async def signalwire_answer(request: Request, call_id: str):
@@ -201,19 +161,10 @@ async def signalwire_gathered(request: Request, call_id: str):
             json.dumps(transcript), call_id,
         )
 
-    # Build recent history (like AgentPhone's recentHistory format)
-    recent_history = []
-    for entry in transcript[-10:]:  # last 10 turns for context
-        recent_history.append({
-            "direction": "inbound" if entry.get("role") == "human" else "outbound",
-            "content": entry.get("text", ""),
-            "timestamp": entry.get("timestamp", ""),
-        })
-
     # ── Step 2: Get Agent Response (Hosted Mode) ──
     agent_reply = await _generate_hosted_llm_response(agent, transcript, call_id)
 
-    # ── Step 4: Save agent reply to transcript ──
+    # ── Step 3: Save agent reply to transcript ──
     transcript.append({
         "role": "agent",
         "text": agent_reply,
@@ -230,143 +181,9 @@ async def signalwire_gathered(request: Request, call_id: str):
     return _xml(xml)
 
 
-
-
-
-@router.post("/recorded/{call_id}")
-async def signalwire_recording_callback(request: Request, call_id: str):
-    """SignalWire POSTs here after <Record> captures audio."""
-    form = await request.form()
-    recording_url = form.get("RecordingUrl", "")
-    recording_duration = form.get("RecordingDuration", "0")
-    call_sid = form.get("CallSid", "")
-
-    logger.info("Call %s — recording received (%ss): %s", call_id, recording_duration, recording_url)
-
-    if not recording_url or recording_duration == "0":
-        xml = _listen_xml(call_id, "I did not hear anything. Could you try again?")
-        return _xml(xml)
-
-    # SignalWire uses HTTP auth for recording URLs if secure media is enabled.
-    # Usually the URL is public unless configured otherwise. We pass it to Deepgram.
-    speech_text = await transcribe_with_deepgram(recording_url)
-    logger.info("Call %s — Deepgram transcript: '%s'", call_id, speech_text)
-
-    if not speech_text:
-        xml = _listen_xml(call_id, "I could not understand that. Could you please repeat?")
-        return _xml(xml)
-
-    async with get_db_conn() as db:
-        call = await db.fetchrow("SELECT * FROM calls WHERE id=$1", call_id)
-        if not call:
-            return _xml("<Response><Say>Call not found.</Say></Response>")
-
-        transcript = _parse_transcript(call.get("transcript"))
-        transcript.append({
-            "role": "human",
-            "text": speech_text,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        })
-        await db.execute(
-            "UPDATE calls SET transcript=$1 WHERE id=$2",
-            json.dumps(transcript), call_id,
-        )
-
-    # Build recent history
-    recent_history = []
-    for entry in transcript[-10:]:
-        recent_history.append({
-            "direction": "inbound" if entry.get("role") == "human" else "outbound",
-            "content": entry.get("text", ""),
-            "timestamp": entry.get("timestamp", ""),
-        })
-
-    # ── Step 2: Get Agent Response (Hosted Mode) ──
-    agent_reply = await _generate_hosted_llm_response(agent, transcript, call_id)
-
-    # Save agent reply
-    transcript.append({
-        "role": "agent",
-        "text": agent_reply,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    })
-    async with get_db_conn() as db:
-        await db.execute(
-            "UPDATE calls SET transcript=$1 WHERE id=$2",
-            json.dumps(transcript), call_id,
-        )
-
-    # Return agent's response + listen for next speech
-    xml = _gather_xml(call_id, agent_reply)
-    return _xml(xml)
-
-
-@router.post("/wait/{call_id}")
-async def signalwire_wait_for_response(request: Request, call_id: str):
-    """
-    Server-side polling wait loop.
-
-    Instead of using TwiML <Pause>+<Redirect> loops (which hit SignalWire's
-    ~10 redirect depth limit after ~20 seconds), we hold the HTTP connection
-    open and poll the DB server-side for up to 55 seconds.
-
-    This gives the agent plenty of time to process speech and call /speak.
-    """
-    # Poll the DB every 2 seconds for up to 55 seconds
-    for i in range(27):  # 27 iterations × 2s = 54s max
-        async with get_db_conn() as db:
-            # Check for queued response from the agent
-            queued = await db.fetchrow(
-                """SELECT id, response_text FROM call_responses
-                   WHERE call_id=$1 AND spoken=false
-                   ORDER BY created_at ASC LIMIT 1""",
-                call_id,
-            )
-
-            if queued:
-                await db.execute(
-                    "UPDATE call_responses SET spoken=true WHERE id=$1",
-                    queued["id"],
-                )
-
-                response_text = queued["response_text"]
-                logger.info("Call %s — agent says (after %ds): %s", call_id, i * 2, response_text[:80])
-
-                # Add to transcript
-                call = await db.fetchrow("SELECT transcript FROM calls WHERE id=$1", call_id)
-                transcript = _parse_transcript(call.get("transcript") if call else None)
-                transcript.append({
-                    "role": "agent",
-                    "text": response_text,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                })
-                await db.execute(
-                    "UPDATE calls SET transcript=$1 WHERE id=$2",
-                    json.dumps(transcript), call_id,
-                )
-
-                # Speak the response and gather the caller's next reply
-                xml = _gather_xml(call_id, response_text)
-                return _xml(xml)
-
-            # Check if call ended externally
-            call = await db.fetchrow("SELECT status FROM calls WHERE id=$1", call_id)
-            if not call or call["status"] == "completed":
-                return _xml("""<?xml version="1.0" encoding="UTF-8"?>
-<Response><Say voice="alice">Goodbye.</Say></Response>""")
-
-        # Wait 2 seconds before next check
-        await asyncio.sleep(2)
-
-    # Timed out waiting for agent — redirect back for another round
-    logger.warning("Call %s — wait loop timed out after 54s, looping again", call_id)
-    wait_url = f"{settings.base_url_clean}/signalwire/wait/{call_id}"
-    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Redirect method="POST">{wait_url}</Redirect>
-</Response>"""
-    return _xml(xml)
-
+# ────────────────────────────────────────────────────────────
+# Voice — SMS Callback
+# ────────────────────────────────────────────────────────────
 
 @router.post("/sms")
 async def signalwire_sms_callback(request: Request):
@@ -492,7 +309,6 @@ async def signalwire_inbound_call(request: Request):
     if agent and agent.get("initial_greeting"):
         greeting = agent["initial_greeting"]
 
-
-
-    xml = _listen_xml(call_id, greeting)
+    # Use <Gather> for real-time speech recognition (NOT <Record>)
+    xml = _gather_xml(call_id, greeting)
     return _xml(xml)
