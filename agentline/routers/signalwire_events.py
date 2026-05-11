@@ -256,11 +256,47 @@ async def signalwire_hangup(request: Request, call_id: str):
     if call_status in ("completed", "failed", "busy", "no-answer", "canceled"):
         async with get_db_conn() as db:
             call = await db.fetchrow("SELECT * FROM calls WHERE id=$1", call_id)
+            if not call:
+                return _xml("<Response/>")
+
             await db.execute(
                 """UPDATE calls SET status='completed', duration_seconds=$1, ended_at=now()
                    WHERE id=$2 AND status!='completed'""",
                 int(duration) if str(duration).isdigit() else 0, call_id,
             )
+
+            # ── Push call.completed event with transcript to event mailbox ──
+            transcript = _parse_transcript(call.get("transcript"))
+            event_id = f"evt_{secrets.token_urlsafe(12)}"
+            event_payload = {
+                "call_id": call_id,
+                "status": call_status,
+                "direction": call.get("direction", ""),
+                "from_number": call.get("from_number", ""),
+                "to_number": call.get("to_number", ""),
+                "duration_seconds": int(duration) if str(duration).isdigit() else 0,
+                "transcript": transcript,
+            }
+
+            event_type = "call.completed" if call_status == "completed" else f"call.{call_status}"
+
+            try:
+                await db.execute(
+                    """INSERT INTO event_mailbox
+                       (event_id, account_id, agent_id, event_type, payload)
+                       VALUES ($1, $2, $3, $4, $5)""",
+                    event_id,
+                    call.get("account_id"),
+                    call.get("agent_id"),
+                    event_type,
+                    json.dumps(event_payload),
+                )
+                logger.info(
+                    "Call %s — pushed %s event (transcript: %d turns)",
+                    call_id, event_type, len(transcript),
+                )
+            except Exception as e:
+                logger.error("Failed to push event for call %s: %s", call_id, e)
 
     return _xml("<Response/>")
 
