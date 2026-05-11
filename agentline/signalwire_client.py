@@ -148,6 +148,8 @@ async def provision_number(
 ) -> dict:
     """
     Search for and buy a phone number from SignalWire's inventory.
+    Automatically configures Voice URL and SMS URL so inbound calls
+    are routed to our server.
     """
     if country.upper() != "US":
         raise Exception("SignalWire provisioning currently only configured for US.")
@@ -158,7 +160,7 @@ async def provision_number(
         params["Contains"] = pattern
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=15.0) as client:
             # 1. Search
             resp = await client.get(search_url, auth=_get_auth(), params=params)
             resp.raise_for_status()
@@ -170,14 +172,26 @@ async def provision_number(
             
             chosen_number = available[0]["phone_number"]
 
-            # 2. Buy
+            # 2. Buy + configure webhook URLs for inbound routing
             buy_url = f"{_get_base_url()}/IncomingPhoneNumbers.json"
-            buy_payload = {"PhoneNumber": chosen_number}
+            buy_payload = {
+                "PhoneNumber": chosen_number,
+                "VoiceUrl": f"{settings.base_url_clean}/signalwire/inbound",
+                "VoiceMethod": "POST",
+                "SmsUrl": f"{settings.base_url_clean}/signalwire/sms",
+                "SmsMethod": "POST",
+                "StatusCallback": f"{settings.base_url_clean}/signalwire/hangup/inbound_status",
+                "StatusCallbackMethod": "POST",
+            }
             buy_resp = await client.post(buy_url, auth=_get_auth(), data=buy_payload)
             buy_resp.raise_for_status()
             buy_result = buy_resp.json()
 
-            logger.info("Successfully provisioned via SignalWire: %s", chosen_number)
+            logger.info(
+                "Provisioned %s via SignalWire (SID: %s) — Voice URL: %s",
+                chosen_number, buy_result.get("sid"),
+                f"{settings.base_url_clean}/signalwire/inbound",
+            )
 
             return {
                 "phone_number": chosen_number,
@@ -187,6 +201,29 @@ async def provision_number(
         raise Exception(f"SignalWire number provision failed: {e.response.text}")
     except Exception as e:
         raise Exception(f"SignalWire number provision failed: {e}")
+
+
+async def configure_number_webhooks(provider_id: str) -> None:
+    """
+    Update webhook URLs on an existing SignalWire number.
+    Use this for numbers that were bought manually or need re-configuration.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{_get_base_url()}/IncomingPhoneNumbers/{provider_id}.json",
+                auth=_get_auth(),
+                data={
+                    "VoiceUrl": f"{settings.base_url_clean}/signalwire/inbound",
+                    "VoiceMethod": "POST",
+                    "SmsUrl": f"{settings.base_url_clean}/signalwire/sms",
+                    "SmsMethod": "POST",
+                },
+            )
+            resp.raise_for_status()
+            logger.info("Configured webhook URLs for SignalWire number: %s", provider_id)
+    except Exception as e:
+        logger.warning("Failed to configure webhooks for %s: %s", provider_id, e)
 
 async def release_number(provider_id: str):
     """

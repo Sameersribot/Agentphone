@@ -12,7 +12,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from agentline.auth_middleware import get_current_account
 from agentline.database import get_db
 from agentline.models.number import NumberProvision, NumberOut
-from agentline.signalwire_client import provision_number as signalwire_provision_number, release_number as signalwire_release_number
+from agentline.signalwire_client import (
+    provision_number as signalwire_provision_number,
+    release_number as signalwire_release_number,
+    configure_number_webhooks as signalwire_configure_webhooks,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -219,12 +223,20 @@ async def attach_existing_number(
         logger.error("Failed to attach number %s: %s", phone_number, e)
         raise HTTPException(500, f"Failed to save number to database: {e}")
 
+    # Auto-configure webhook URLs on SignalWire
+    webhook_status = "manual_config_needed"
+    try:
+        await signalwire_configure_webhooks(provider_id)
+        webhook_status = "auto_configured"
+    except Exception as e:
+        logger.warning("Could not auto-configure webhooks for %s: %s", phone_number, e)
+
     return {
         "id": number_id,
         "agent_id": agent_id,
         "phone_number": phone_number,
         "status": "active",
-        "message": "Number attached. Configure its Answer URL in SignalWire dashboard to point to your server.",
+        "webhooks": webhook_status,
     }
 
 
