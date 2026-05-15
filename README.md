@@ -9,7 +9,6 @@ AI-native telephony platform — give your agent a phone number, voice, and SMS.
 - **Redis** — caching & rate limiting
 - **Plivo & SignalWire** — phone numbers, SMS, voice calls (Multi-Provider)
 - **Deepgram** — pre-recorded and real-time speech-to-text
-- **Cartesia / Polly** — text-to-speech
 
 ## Quick Start
 
