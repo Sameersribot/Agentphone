@@ -7,6 +7,7 @@ CREATE TABLE accounts (
     id               TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
     human_email      TEXT UNIQUE NOT NULL,
     supabase_user_id TEXT UNIQUE,   -- Links to Supabase Auth user
+    balance          NUMERIC(12,4) NOT NULL DEFAULT 10.0000,  -- USD balance, starts with $10
     created_at       TIMESTAMPTZ DEFAULT now()
 );
 
@@ -127,6 +128,18 @@ CREATE TABLE IF NOT EXISTS event_mailbox (
     created_at  TIMESTAMPTZ DEFAULT now()
 );
 
+-- Billing ledger: every debit/credit is an immutable row
+CREATE TABLE IF NOT EXISTS billing_ledger (
+    id              SERIAL PRIMARY KEY,
+    account_id      TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    amount          NUMERIC(12,4) NOT NULL,   -- negative = debit, positive = credit
+    balance_after   NUMERIC(12,4) NOT NULL,   -- snapshot of balance after this txn
+    txn_type        TEXT NOT NULL,             -- 'call_charge', 'number_provision', 'topup', 'refund'
+    reference_id    TEXT,                      -- call_id, number_id, or payment_id
+    description     TEXT,
+    created_at      TIMESTAMPTZ DEFAULT now()
+);
+
 
 -- Performance indexes
 CREATE INDEX idx_api_keys_prefix ON api_keys(key_prefix) WHERE revoked_at IS NULL;
@@ -144,3 +157,5 @@ CREATE INDEX idx_accounts_supabase ON accounts(supabase_user_id) WHERE supabase_
 CREATE INDEX idx_event_mailbox_account ON event_mailbox(account_id, created_at ASC);
 CREATE INDEX idx_event_mailbox_agent ON event_mailbox(account_id, agent_id, created_at ASC);
 CREATE INDEX idx_event_mailbox_expiry ON event_mailbox(account_id, created_at);
+CREATE INDEX idx_billing_ledger_account ON billing_ledger(account_id, created_at DESC);
+CREATE INDEX idx_billing_ledger_type ON billing_ledger(account_id, txn_type);

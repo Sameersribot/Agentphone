@@ -1,12 +1,18 @@
 """
 AgentLine — Usage Router
-Usage stats and billing metrics.
+Usage stats, billing metrics, balance, and transaction history.
 """
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from agentline.auth_middleware import get_current_account
 from agentline.database import get_db
+from agentline.billing import (
+    CALL_RATE_PER_MINUTE,
+    NUMBER_PROVISION_COST,
+    calculate_call_cost,
+    credit_account,
+)
 
 router = APIRouter(prefix="/v1/usage", tags=["Usage"])
 
@@ -49,9 +55,127 @@ async def get_usage(
         account["id"],
     )
 
+    # Get current balance
+    balance = await db.fetchval(
+        "SELECT balance FROM accounts WHERE id = $1", account["id"]
+    )
+
+    # Calculate estimated cost for this month's calls
+    total_seconds = int(call_stats["total_call_seconds"]) if call_stats else 0
+    estimated_call_cost = calculate_call_cost(total_seconds)
+
     return {
         "period": period,
+        "balance": float(balance) if balance is not None else 0.0,
         "calls": dict(call_stats) if call_stats else {},
         "messages": dict(msg_stats) if msg_stats else {},
         "active_numbers": number_count or 0,
+        "billing": {
+            "estimated_call_cost_this_month": estimated_call_cost,
+            "rates": {
+                "call_per_minute": CALL_RATE_PER_MINUTE,
+                "number_provision": NUMBER_PROVISION_COST,
+            },
+        },
+    }
+
+
+@router.get("/balance")
+async def get_balance(
+    account=Depends(get_current_account),
+    db=Depends(get_db),
+):
+    """Get the current account balance."""
+    balance = await db.fetchval(
+        "SELECT balance FROM accounts WHERE id = $1", account["id"]
+    )
+    return {
+        "account_id": account["id"],
+        "balance": float(balance) if balance is not None else 0.0,
+        "currency": "USD",
+    }
+
+
+@router.get("/transactions")
+async def get_transactions(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    txn_type: str | None = Query(None, description="Filter by type: call_charge, number_provision, topup, refund"),
+    account=Depends(get_current_account),
+    db=Depends(get_db),
+):
+    """Get billing transaction history (most recent first)."""
+    conditions = ["account_id = $1"]
+    params: list = [account["id"]]
+    idx = 2
+
+    if txn_type:
+        conditions.append(f"txn_type = ${idx}")
+        params.append(txn_type)
+        idx += 1
+
+    where = " AND ".join(conditions)
+    params.extend([limit, offset])
+
+    rows = await db.fetch(
+        f"""SELECT id, amount, balance_after, txn_type, reference_id, description, created_at
+            FROM billing_ledger
+            WHERE {where}
+            ORDER BY created_at DESC
+            LIMIT ${idx} OFFSET ${idx + 1}""",
+        *params,
+    )
+
+    total = await db.fetchval(
+        f"SELECT COUNT(*) FROM billing_ledger WHERE {where}",
+        *params[:idx - 1],
+    )
+
+    return {
+        "transactions": [
+            {
+                **dict(r),
+                "amount": float(r["amount"]),
+                "balance_after": float(r["balance_after"]),
+            }
+            for r in rows
+        ],
+        "total": total or 0,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@router.post("/topup")
+async def topup_balance(
+    body: dict,
+    account=Depends(get_current_account),
+    db=Depends(get_db),
+):
+    """
+    Add funds to account balance (placeholder — integrate with Stripe/Razorpay).
+
+    Body: {"amount": 10.00}
+    """
+    amount = body.get("amount", 0)
+    if not isinstance(amount, (int, float)) or amount <= 0:
+        raise HTTPException(400, "amount must be a positive number.")
+    if amount > 1000:
+        raise HTTPException(400, "Maximum single top-up is $1000.")
+
+    # TODO: Integrate with payment gateway (Stripe, Razorpay, etc.)
+    # For now, this is a direct balance credit — only for testing/admin use.
+
+    new_balance = await credit_account(
+        db,
+        account["id"],
+        float(amount),
+        txn_type="topup",
+        description=f"Manual top-up of ${amount:.2f}",
+    )
+
+    return {
+        "topped_up": float(amount),
+        "new_balance": new_balance,
+        "currency": "USD",
     }

@@ -20,6 +20,7 @@ from fastapi.responses import Response
 from agentline.config import settings
 from agentline.database import get_db_conn
 from agentline.voice.llm import llm_response
+from agentline.billing import calculate_call_cost, debit_account
 
 logger = logging.getLogger(__name__)
 
@@ -259,11 +260,39 @@ async def signalwire_hangup(request: Request, call_id: str):
             if not call:
                 return _xml("<Response/>")
 
+            duration_secs = int(duration) if str(duration).isdigit() else 0
+
             await db.execute(
                 """UPDATE calls SET status='completed', duration_seconds=$1, ended_at=now()
                    WHERE id=$2 AND status!='completed'""",
-                int(duration) if str(duration).isdigit() else 0, call_id,
+                duration_secs, call_id,
             )
+
+            # ── Billing: charge $0.10/min for the call ──
+            if duration_secs > 0 and call.get("account_id"):
+                call_cost = calculate_call_cost(duration_secs)
+                direction = call.get("direction", "unknown")
+                try:
+                    await debit_account(
+                        db,
+                        call["account_id"],
+                        call_cost,
+                        txn_type="call_charge",
+                        reference_id=call_id,
+                        description=(
+                            f"{direction.capitalize()} call {duration_secs}s "
+                            f"({call.get('from_number', '')} → {call.get('to_number', '')})"
+                        ),
+                    )
+                    logger.info(
+                        "Call %s — billed $%.4f for %ds (%s)",
+                        call_id, call_cost, duration_secs, direction,
+                    )
+                except ValueError as e:
+                    # Insufficient balance — log but don't block call completion
+                    logger.warning(
+                        "Call %s — billing failed (insufficient balance): %s", call_id, e
+                    )
 
             # ── Push call.completed event with transcript to event mailbox ──
             transcript = _parse_transcript(call.get("transcript"))
@@ -274,7 +303,7 @@ async def signalwire_hangup(request: Request, call_id: str):
                 "direction": call.get("direction", ""),
                 "from_number": call.get("from_number", ""),
                 "to_number": call.get("to_number", ""),
-                "duration_seconds": int(duration) if str(duration).isdigit() else 0,
+                "duration_seconds": duration_secs,
                 "transcript": transcript,
             }
 

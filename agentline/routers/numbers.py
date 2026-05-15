@@ -17,6 +17,11 @@ from agentline.signalwire_client import (
     release_number as signalwire_release_number,
     configure_number_webhooks as signalwire_configure_webhooks,
 )
+from agentline.billing import (
+    NUMBER_PROVISION_COST,
+    check_balance,
+    debit_account,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +68,12 @@ async def provision(
             f"Agent already has an active number: {existing['phone_number']} (id: {existing['id']}). "
             "Release it first with DELETE /v1/numbers/{number_id} before provisioning a new one.",
         )
+
+    # Check balance before provisioning ($2.00 per number)
+    try:
+        await check_balance(db, account["id"], NUMBER_PROVISION_COST)
+    except ValueError as e:
+        raise HTTPException(402, str(e))
 
     # Provision via SignalWire
     try:
@@ -115,6 +126,22 @@ async def provision(
         logger.error("Number %s INSERT succeeded but verification SELECT returned nothing!", number_id)
         raise HTTPException(500, "Database write verification failed. Please try again.")
 
+    # Debit $2.00 for the provisioned number
+    new_balance = None
+    try:
+        new_balance = await debit_account(
+            db,
+            account["id"],
+            NUMBER_PROVISION_COST,
+            txn_type="number_provision",
+            reference_id=number_id,
+            description=f"Provisioned number {number_data['phone_number']}",
+        )
+    except ValueError as e:
+        # This shouldn't happen since we checked earlier, but handle gracefully
+        logger.error("Balance debit failed after provisioning %s: %s", number_id, e)
+        # Don't rollback the number — it's provisioned. Just log the billing failure.
+
     return {
         "id": number_id,
         "agent_id": body.agent_id,
@@ -122,6 +149,8 @@ async def provision(
         "country": body.country,
         "number_type": body.number_type,
         "status": "active",
+        "cost": NUMBER_PROVISION_COST,
+        "balance_remaining": new_balance,
     }
 
 

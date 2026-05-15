@@ -50,6 +50,29 @@ async def init_db():
                 WHERE spoken = false
             """)
             logger.info("call_responses table verified")
+
+            # Auto-create billing infrastructure
+            await conn.execute("""
+                ALTER TABLE accounts
+                    ADD COLUMN IF NOT EXISTS balance NUMERIC(12,4) NOT NULL DEFAULT 10.0000
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS billing_ledger (
+                    id              SERIAL PRIMARY KEY,
+                    account_id      TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                    amount          NUMERIC(12,4) NOT NULL,
+                    balance_after   NUMERIC(12,4) NOT NULL,
+                    txn_type        TEXT NOT NULL,
+                    reference_id    TEXT,
+                    description     TEXT,
+                    created_at      TIMESTAMPTZ DEFAULT now()
+                )
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_billing_ledger_account
+                    ON billing_ledger(account_id, created_at DESC)
+            """)
+            logger.info("billing tables verified")
     except Exception as e:
         logger.error("Database connection failed: %s", e)
         logger.warning("Server starting WITHOUT database — fix DATABASE_URL in .env")
