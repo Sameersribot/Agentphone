@@ -1,6 +1,6 @@
 ---
 name: agentline
-description: Make phone calls and send SMS messages through the AgentLine telephony API. Use when the user asks to call someone, send a text message, check call transcripts, manage phone agents, or provision phone numbers.
+description: Make phone calls, send SMS, provision numbers, manage agents, and track billing through the AgentLine telephony API. Use when the user asks to call someone, send a text, check transcripts, manage phone agents, buy numbers, or check account balance.
 metadata:
   openclaw:
     emoji: "📞"
@@ -11,14 +11,30 @@ metadata:
     primaryEnv: AGENTLINE_API_KEY
 ---
 
-# AgentLine — Phone Call & SMS Skill
+# AgentLine — AI Telephony Skill
 
-You can make phone calls and send SMS messages through the AgentLine API.
-AgentLine manages real phone numbers, voice agents, and SMS conversations.
+Give your AI agent a real phone number, voice calls, and SMS — no servers, no webhooks, no infrastructure.
+
+## First-Time Setup
+
+**You need two things to use AgentLine:**
+
+| Variable | What it is |
+|----------|------------|
+| `AGENTLINE_API_KEY` | Your API key (starts with `sk_live_`) |
+| `AGENTLINE_AGENT_ID` | Your agent ID (starts with `agt_`) |
+
+**If you don't have these**, tell your human:
+
+> "To use phone calls and SMS, you need an AgentLine account. Go to **https://agentline.cloud** to sign up and get your API key and agent ID."
+
+**Do NOT proceed with any API calls until you have both values.**
+
+---
 
 ## Authentication
 
-Every request needs these headers:
+Every request needs this header:
 
 ```
 Authorization: Bearer $AGENTLINE_API_KEY
@@ -27,39 +43,21 @@ Content-Type: application/json
 
 Base URL: `https://agentphone-production.up.railway.app`
 
-## Default Agent
+---
 
-Your default agent ID is `$AGENTLINE_AGENT_ID`. Use this for all calls and SMS unless the user specifies a different agent.
+## How Calls Work (Hosted Mode)
+
+AgentLine runs in **Hosted Mode** — the server runs the AI voice conversation for you. You create a call, the AI handles the conversation autonomously, and you retrieve the transcript afterwards.
+
+### System Prompts — Two Types
+
+1. **Dynamic prompt** — set per outbound call using the `system_prompt` field in `POST /v1/calls`. This overrides the default for that specific call only.
+
+2. **Default prompt** — stored on the agent via `PATCH /v1/agents/{agent_id}`. This is the permanent prompt used for **all inbound calls** and any outbound call where no dynamic prompt is provided.
 
 ---
 
-## Voice Modes
-
-AgentLine supports three voice modes:
-
-### 1. Hosted Mode (default for outbound calls)
-The server runs the LLM using the agent's `system_prompt`. No webhook or external server needed. Just create the call and the AI handles everything.
-
-### 2. Relay Mode (agent controls the conversation — **recommended for AI agents**)
-Your agent controls the conversation via API. No webhook needed, no public URL needed.
-This works perfectly from localhost, behind firewalls, or anywhere.
-
-**Flow:**
-1. Create a call → `POST /v1/calls`
-2. Poll for events → `GET /v1/events?agent_id=$AGENTLINE_AGENT_ID&wait=true`
-3. When you receive a `call.speech_received` event, process with your LLM
-4. Send response → `POST /v1/calls/{call_id}/speak`
-5. Repeat until call ends
-
-### 3. Webhook Mode (external server)
-Speech is transcribed and POSTed to a configured webhook URL. Only use this if you have a public server. **Not needed for most agents.**
-
----
-
-## Voice Call — How It Works
-
-### Outbound Call (Hosted Mode — simplest)
-Just create the call with a `system_prompt`. The AI runs the conversation autonomously.
+## Make an Outbound Call
 
 ```bash
 curl -X POST $AGENTLINE_URL/v1/calls \
@@ -73,129 +71,16 @@ curl -X POST $AGENTLINE_URL/v1/calls \
   }'
 ```
 
-The AI handles the full conversation. Poll `GET /v1/calls/<call_id>` until `status` is `completed` to get the transcript.
-
-### Relay Mode (your LLM controls the conversation — NO public URL needed)
-
-**Step 1: Create the call**
-```bash
-curl -X POST $AGENTLINE_URL/v1/calls \
-  -H "Authorization: Bearer $AGENTLINE_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "agent_id": "$AGENTLINE_AGENT_ID",
-    "to_number": "+1XXXXXXXXXX"
-  }'
-# Returns: {"id": "call_xxx", ...}
-```
-
-**Step 2: Poll for events (long-poll, holds 25 seconds)**
-```bash
-curl "$AGENTLINE_URL/v1/events?agent_id=$AGENTLINE_AGENT_ID&wait=true" \
-  -H "Authorization: Bearer $AGENTLINE_API_KEY"
-```
-
-Returns events like:
-```json
-{
-  "events": [
-    {
-      "event_id": "evt_xxx",
-      "event_type": "call.speech_received",
-      "data": {
-        "call_id": "call_xxx",
-        "speech_text": "Hello, who is this?",
-        "from_number": "+14155551234",
-        "direction": "outbound"
-      }
-    }
-  ],
-  "pending": 1
-}
-```
-
-**Step 3: Send your response**
-```bash
-curl -X POST $AGENTLINE_URL/v1/calls/call_xxx/speak \
-  -H "Authorization: Bearer $AGENTLINE_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"text": "Hi! This is the scheduling assistant."}'
-```
-
-**Step 4: Acknowledge events you've processed**
-```bash
-curl -X POST $AGENTLINE_URL/v1/events/ack \
-  -H "Authorization: Bearer $AGENTLINE_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"event_ids": ["evt_xxx"]}'
-```
-
-**Step 5: Loop back to Step 2 until call ends**
-
-That's it. No webhook URL, no ngrok, no public server needed.
-
----
-
-## Events API (Mailbox Mode)
-
-Every agent automatically has an event mailbox. All events (speech, SMS, call status) are queued server-side and you pull them via API.
-
-### Poll for Events
-```bash
-# Instant (returns immediately)
-curl "$AGENTLINE_URL/v1/events?agent_id=$AGENTLINE_AGENT_ID" \
-  -H "Authorization: Bearer $AGENTLINE_API_KEY"
-
-# Long-poll (holds up to 25 seconds for new events)
-curl "$AGENTLINE_URL/v1/events?agent_id=$AGENTLINE_AGENT_ID&wait=true" \
-  -H "Authorization: Bearer $AGENTLINE_API_KEY"
-```
-
-### Event Types
-| Event | When | Key Fields |
-|-------|------|------------|
-| `call.speech_received` | Person spoke on a call | `call_id`, `speech_text` |
-| `call.inbound` | Someone called your number | `call_id`, `from_number` |
-| `call.completed` | Call ended | `call_id`, `duration` |
-| `agent.message` | Inbound SMS/MMS | `from_number`, `content` |
-
-### Acknowledge Events
-```bash
-curl -X POST $AGENTLINE_URL/v1/events/ack \
-  -H "Authorization: Bearer $AGENTLINE_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"event_ids": ["evt_xxx", "evt_yyy"]}'
-```
-
-### Clear All Events
-```bash
-curl -X DELETE "$AGENTLINE_URL/v1/events?agent_id=$AGENTLINE_AGENT_ID" \
-  -H "Authorization: Bearer $AGENTLINE_API_KEY"
-```
-
----
-
-## Outbound Call Fields
-
-```bash
-curl -X POST $AGENTLINE_URL/v1/calls \
-  -H "Authorization: Bearer $AGENTLINE_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "agent_id": "$AGENTLINE_AGENT_ID",
-    "to_number": "+1XXXXXXXXXX",
-    "system_prompt": "You are a helpful assistant.",
-    "initial_greeting": "Hello! How can I help?"
-  }'
-```
-
 | Field | Required | Description |
 |-------|----------|-------------|
-| `agent_id` | Yes | Agent making the call |
-| `to_number` | Yes | E.164 phone number |
-| `system_prompt` | No | Override agent's default prompt |
-| `initial_greeting` | No | What the agent says first |
-| `model_tier` | No | `"turbo"`, `"balanced"`, or `"max"` |
+| `agent_id` | Yes | Your agent ID |
+| `to_number` | Yes | E.164 phone number to call |
+| `system_prompt` | No | Dynamic prompt for this call only (overrides default) |
+| `initial_greeting` | No | What the agent says first when the person picks up |
+
+The AI handles the full conversation. Poll `GET /v1/calls/<call_id>` until `status` is `completed` to get the transcript.
+
+**If you get 400 "Agent has no active phone number"**, provision one first (see below).
 
 ---
 
@@ -203,6 +88,42 @@ curl -X POST $AGENTLINE_URL/v1/calls \
 
 ```bash
 curl -X POST $AGENTLINE_URL/v1/calls/<call_id>/hangup \
+  -H "Authorization: Bearer $AGENTLINE_API_KEY"
+```
+
+---
+
+## Get Call Transcript
+
+```bash
+curl $AGENTLINE_URL/v1/calls/<call_id>/transcript \
+  -H "Authorization: Bearer $AGENTLINE_API_KEY"
+```
+
+Returns the full conversation transcript as an array of `{role, text, timestamp}` entries.
+
+---
+
+## List Calls (Call Logs)
+
+```bash
+# All calls
+curl "$AGENTLINE_URL/v1/calls?limit=20" \
+  -H "Authorization: Bearer $AGENTLINE_API_KEY"
+
+# Filter by status
+curl "$AGENTLINE_URL/v1/calls?status=completed&limit=10" \
+  -H "Authorization: Bearer $AGENTLINE_API_KEY"
+```
+
+Returns call history with direction, status, duration, phone numbers, and timestamps.
+
+---
+
+## Get Single Call Details
+
+```bash
+curl $AGENTLINE_URL/v1/calls/<call_id> \
   -H "Authorization: Bearer $AGENTLINE_API_KEY"
 ```
 
@@ -221,32 +142,84 @@ curl -X POST $AGENTLINE_URL/v1/messages \
   }'
 ```
 
+Pass `"media_url": "https://..."` to send an MMS with an image.
+
 ---
 
-## Get Call Transcript
+## List Messages
 
 ```bash
-curl $AGENTLINE_URL/v1/calls/<call_id>/transcript \
+curl "$AGENTLINE_URL/v1/messages?limit=20" \
   -H "Authorization: Bearer $AGENTLINE_API_KEY"
 ```
 
 ---
 
-## List Calls
+## Set the Default System Prompt
+
+The default system prompt is used for **all inbound calls** and any outbound call where no dynamic prompt is given.
 
 ```bash
-curl "$AGENTLINE_URL/v1/calls?limit=10" \
+curl -X PATCH $AGENTLINE_URL/v1/agents/$AGENTLINE_AGENT_ID \
+  -H "Authorization: Bearer $AGENTLINE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "system_prompt": "You are a friendly customer support agent for Acme Corp. Help callers with orders, returns, and general questions. Keep responses brief and professional.",
+    "initial_greeting": "Hello! Thanks for calling Acme Corp. How can I help you today?"
+  }'
+```
+
+| Field | Description |
+|-------|-------------|
+| `system_prompt` | The permanent AI instructions for this agent |
+| `initial_greeting` | What the agent says when answering inbound calls |
+| `name` | Display name for the agent |
+| `model_tier` | `"turbo"`, `"balanced"`, or `"max"` |
+
+---
+
+## Get Agent Details
+
+```bash
+curl $AGENTLINE_URL/v1/agents/$AGENTLINE_AGENT_ID \
   -H "Authorization: Bearer $AGENTLINE_API_KEY"
 ```
 
 ---
 
-## List Agents
+## List All Agents
 
 ```bash
 curl $AGENTLINE_URL/v1/agents \
   -H "Authorization: Bearer $AGENTLINE_API_KEY"
 ```
+
+---
+
+## Provision a Phone Number
+
+Each agent needs a phone number to make/receive calls and send SMS. Only US numbers are supported.
+
+```bash
+curl -X POST $AGENTLINE_URL/v1/numbers \
+  -H "Authorization: Bearer $AGENTLINE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent_id": "$AGENTLINE_AGENT_ID",
+    "country": "US",
+    "number_type": "local",
+    "pattern": "415"
+  }'
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `agent_id` | Yes | Agent to attach the number to |
+| `country` | Yes | Must be `"US"` |
+| `number_type` | No | `"local"` or `"tollfree"` (default: local) |
+| `pattern` | No | Area code filter (e.g. `"212"` for NYC, `"415"` for SF) |
+
+**Cost:** $2.00 per number. Each agent can only have **one** active number.
 
 ---
 
@@ -259,52 +232,73 @@ curl $AGENTLINE_URL/v1/numbers \
 
 ---
 
-## Provision a Phone Number
+## Release a Phone Number
 
 ```bash
-curl -X POST $AGENTLINE_URL/v1/numbers \
-  -H "Authorization: Bearer $AGENTLINE_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "agent_id": "$AGENTLINE_AGENT_ID",
-    "country": "US",
-    "area_code": "415"
-  }'
+curl -X DELETE $AGENTLINE_URL/v1/numbers/<number_id> \
+  -H "Authorization: Bearer $AGENTLINE_API_KEY"
 ```
-
-Note: Each agent can only have ONE active phone number.
 
 ---
 
-## Webhook Mode (optional — only if you have a public server)
-
-If you have a public server and prefer push-based delivery, you can configure a webhook:
+## Check Balance
 
 ```bash
-curl -X POST $AGENTLINE_URL/v1/webhooks \
-  -H "Authorization: Bearer $AGENTLINE_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"url": "https://your-public-server.com/voice-webhook", "agent_id": "$AGENTLINE_AGENT_ID"}'
+curl $AGENTLINE_URL/v1/billing/balance \
+  -H "Authorization: Bearer $AGENTLINE_API_KEY"
 ```
 
-**Note:** If no webhook is configured, events are automatically queued in the event mailbox. You don't need to configure anything — just use `GET /v1/events`.
+Returns current balance, how many call minutes and phone numbers you can afford, and the rate card.
 
 ---
 
-## Legacy API (still works)
+## View Expenditure
 
-The `/listen` and `/speak` polling endpoints still work for backwards compatibility, but the events API is preferred for cleaner integration.
+```bash
+# Full breakdown (current month)
+curl "$AGENTLINE_URL/v1/billing/expenditure?period=current_month" \
+  -H "Authorization: Bearer $AGENTLINE_API_KEY"
+
+# Call charges only (with per-call detail)
+curl "$AGENTLINE_URL/v1/billing/expenditure/calls?limit=10" \
+  -H "Authorization: Bearer $AGENTLINE_API_KEY"
+
+# Number provisioning charges
+curl "$AGENTLINE_URL/v1/billing/expenditure/numbers" \
+  -H "Authorization: Bearer $AGENTLINE_API_KEY"
+```
+
+Period options: `current_month`, `last_month`, `all_time`, or `YYYY-MM` (e.g. `2026-05`).
+
+---
+
+## Verify Balance Deduction After a Call
+
+```bash
+curl $AGENTLINE_URL/v1/billing/verify/<call_id> \
+  -H "Authorization: Bearer $AGENTLINE_API_KEY"
+```
+
+Returns whether the call was charged, the expected vs actual cost, and the balance snapshot. Use this to confirm billing accuracy after each call.
+
+---
+
+## Rates
+
+| Item | Cost |
+|------|------|
+| Outbound call | $0.10 per minute (billed per second) |
+| Inbound call | $0.10 per minute (billed per second) |
+| Phone number | $2.00 per number (one-time) |
 
 ---
 
 ## Rules
 
-1. **Always use E.164 phone numbers** — format: `+1XXXXXXXXXX` (US), `+91XXXXXXXXXX` (India).
+1. **Always use E.164 phone numbers** — format: `+1XXXXXXXXXX` for US numbers.
 2. **Always confirm with the user before placing calls** — never auto-dial without explicit consent.
-3. **Use `$AGENTLINE_AGENT_ID` by default** — only look up agents if the user asks to manage them.
-4. **For hosted mode** — just create the call with a system_prompt. The AI handles everything.
-5. **For relay mode** — poll `GET /v1/events?wait=true`, respond with `/speak`. No webhook needed.
-6. **Keep voice responses short** — under 30 words per response. The caller is listening, not reading.
-7. **If a call fails with 400 "Agent has no active phone number"**, provision a number first.
-8. **SMS supports MMS** — pass `media_url` to attach images.
-9. **Events auto-expire after 5 minutes** — always poll regularly during active calls.
+3. **Use `$AGENTLINE_AGENT_ID` by default** — only look up other agents if the user asks.
+4. **If a call fails with "Agent has no active phone number"**, provision a number first with `POST /v1/numbers`.
+5. **Keep voice responses short** — under 30 words per response. The caller is listening, not reading.
+6. **Only US numbers are supported** — country must be `"US"`.
+7. **If you don't have `AGENTLINE_API_KEY` or `AGENTLINE_AGENT_ID`**, direct the user to **https://agentline.cloud** to sign up.

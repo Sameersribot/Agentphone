@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from agentline.database import init_db, close_db
 from agentline.redis_client import init_redis, close_redis
-from agentline.routers import auth, agents, numbers, messages, calls, usage, events, signalwire_events
+from agentline.routers import auth, agents, numbers, messages, calls, usage, events, signalwire_events, billing_api
 
 # Configure logging
 logging.basicConfig(
@@ -61,6 +61,7 @@ app.include_router(calls.router)
 app.include_router(usage.router)
 app.include_router(events.router)
 app.include_router(signalwire_events.router)
+app.include_router(billing_api.router)
 
 
 @app.get("/", tags=["Health"])
