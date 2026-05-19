@@ -357,6 +357,21 @@ async def signalwire_inbound_call(request: Request):
         if not number:
             return _xml("<Response><Say>This number is not configured. Goodbye.</Say></Response>")
 
+        # ── Billing: reject inbound calls if account has insufficient balance ──
+        balance = await db.fetchval(
+            "SELECT balance FROM accounts WHERE id = $1", number["account_id"]
+        )
+        if balance is not None and float(balance) < 0.10:
+            logger.warning(
+                "Inbound call rejected — account %s has insufficient balance ($%.2f)",
+                number["account_id"], float(balance),
+            )
+            return _xml(
+                "<Response><Say>This number is temporarily unavailable due to "
+                "insufficient account balance. Please contact the account owner. "
+                "Goodbye.</Say></Response>"
+            )
+
         agent = await db.fetchrow("SELECT * FROM agents WHERE id=$1", number["agent_id"])
 
         call_id = f"call_{secrets.token_urlsafe(12)}"

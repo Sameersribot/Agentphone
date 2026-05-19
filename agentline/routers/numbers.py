@@ -232,6 +232,12 @@ async def attach_existing_number(
     if not phone_number.startswith("+1"):
         raise HTTPException(400, "Only US numbers (+1) via SignalWire are supported.")
 
+    # ── Billing: check balance before attaching ($2.00 per number) ──
+    try:
+        await check_balance(db, account["id"], NUMBER_PROVISION_COST)
+    except ValueError as e:
+        raise HTTPException(402, str(e))
+
     number_id = f"num_{secrets.token_urlsafe(12)}"
     provider_id = phone_number.lstrip("+")
 
@@ -252,6 +258,19 @@ async def attach_existing_number(
         logger.error("Failed to attach number %s: %s", phone_number, e)
         raise HTTPException(500, f"Failed to save number to database: {e}")
 
+    # ── Billing: debit $2.00 for the attached number ──
+    try:
+        await debit_account(
+            db,
+            account["id"],
+            NUMBER_PROVISION_COST,
+            txn_type="number_provision",
+            reference_id=number_id,
+            description=f"Attached existing number {phone_number}",
+        )
+    except ValueError as e:
+        logger.error("Balance debit failed after attaching %s: %s", number_id, e)
+
     # Auto-configure webhook URLs on SignalWire
     webhook_status = "manual_config_needed"
     try:
@@ -265,6 +284,7 @@ async def attach_existing_number(
         "agent_id": agent_id,
         "phone_number": phone_number,
         "status": "active",
+        "cost": NUMBER_PROVISION_COST,
         "webhooks": webhook_status,
     }
 

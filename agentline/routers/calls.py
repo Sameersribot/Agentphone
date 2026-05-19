@@ -23,6 +23,10 @@ from agentline.database import get_db, get_db_conn
 from agentline.models.call import CallRequest
 from agentline.signalwire_client import initiate_call as signalwire_initiate_call
 from agentline.signalwire_client import hangup_call as signalwire_hangup_call
+from agentline.billing import check_balance, CALL_RATE_PER_MINUTE
+
+# Minimum balance required to initiate a call (~5 minutes worth)
+MIN_CALL_BALANCE = round(CALL_RATE_PER_MINUTE * 5, 2)  # $0.50
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +64,15 @@ async def create_call(
         )
     if not number:
         raise HTTPException(400, "Agent has no active phone number.")
+
+    # ── Billing: require minimum balance before initiating call ──
+    try:
+        await check_balance(db, account["id"], MIN_CALL_BALANCE)
+    except ValueError as e:
+        raise HTTPException(
+            402,
+            f"Insufficient balance to make a call. Minimum ${MIN_CALL_BALANCE:.2f} required. {e}",
+        )
 
     call_id = f"call_{secrets.token_urlsafe(12)}"
     system_prompt = body.system_prompt or agent["system_prompt"]

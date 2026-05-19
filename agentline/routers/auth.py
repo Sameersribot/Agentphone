@@ -16,6 +16,10 @@ import bcrypt
 from agentline.database import get_db
 from agentline.email_client import send_otp, verify_otp
 from agentline.signalwire_client import provision_number
+from agentline.billing import (
+    NUMBER_PROVISION_COST,
+    debit_account,
+)
 
 router = APIRouter(prefix="/v0/agent", tags=["Auth"])
 
@@ -142,6 +146,22 @@ async def verify(body: VerifyRequest, db=Depends(get_db)):
             )
             number_id = None
             phone_number = None
+
+    # --- Debit $2.00 for the auto-provisioned number ---
+    if number_id:
+        try:
+            await debit_account(
+                db,
+                account_id,
+                NUMBER_PROVISION_COST,
+                txn_type="number_provision",
+                reference_id=number_id,
+                description=f"Signup: provisioned number {phone_number}",
+            )
+        except ValueError as e:
+            logging.getLogger(__name__).warning(
+                "Signup: billing debit failed for number %s: %s", phone_number, e
+            )
 
     # --- Generate API key ---
     raw_key = f"sk_live_{secrets.token_urlsafe(32)}"
