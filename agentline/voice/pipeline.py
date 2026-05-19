@@ -193,10 +193,78 @@ async def run_pipeline(
             except Exception as e:
                 logger.error("TTS/send failed for call %s: %s", call_id, e)
 
+    # ── Deepgram lifecycle event handlers ──
+    dg_ready = asyncio.Event()
+
+    async def on_dg_open(self, open_response, **kwargs):
+        logger.info("Call %s — Deepgram WebSocket OPEN (connection ready)", call_id)
+        dg_ready.set()
+
+    async def on_dg_error(self, error, **kwargs):
+        logger.error("Call %s — Deepgram ERROR: %s", call_id, error)
+
+    async def on_dg_close(self, *args, **kwargs):
+        logger.info("Call %s — Deepgram WebSocket CLOSED", call_id)
+
+    async def on_utterance_end(self, utterance_end, **kwargs):
+        logger.info("Call %s — Deepgram UtteranceEnd event (buffer: %s)", call_id, utterance_buffer)
+        # Fallback: if we have buffered text but speech_final never fired, flush now
+        if utterance_buffer:
+            full_utterance = " ".join(utterance_buffer).strip()
+            utterance_buffer.clear()
+            if full_utterance:
+                logger.info("Call %s — Human (via UtteranceEnd): %s", call_id, full_utterance)
+
+                transcript_turns.append({
+                    "role": "human",
+                    "text": full_utterance,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+
+                try:
+                    async with get_db_conn() as db:
+                        await db.execute(
+                            "UPDATE calls SET transcript=$1 WHERE id=$2",
+                            json.dumps(transcript_turns), call_id,
+                        )
+                except Exception as e:
+                    logger.warning("Failed to save transcript for call %s: %s", call_id, e)
+
+                conversation_history.append({"role": "user", "content": full_utterance})
+                reply = await llm_response(system_prompt, conversation_history, model_tier)
+                conversation_history.append({"role": "assistant", "content": reply})
+
+                logger.info("Call %s — Agent: %s", call_id, reply)
+
+                transcript_turns.append({
+                    "role": "agent",
+                    "text": reply,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+
+                try:
+                    async with get_db_conn() as db:
+                        await db.execute(
+                            "UPDATE calls SET transcript=$1 WHERE id=$2",
+                            json.dumps(transcript_turns), call_id,
+                        )
+                except Exception as e:
+                    logger.warning("Failed to save transcript for call %s: %s", call_id, e)
+
+                try:
+                    audio = await tts_cartesia(reply, voice_id)
+                    await send_audio(provider_ws, audio, stream_sid)
+                except Exception as e:
+                    logger.error("TTS/send failed for call %s: %s", call_id, e)
+
+    dg_connection.on(LiveTranscriptionEvents.Open, on_dg_open)
+    dg_connection.on(LiveTranscriptionEvents.Error, on_dg_error)
+    dg_connection.on(LiveTranscriptionEvents.Close, on_dg_close)
+    dg_connection.on(LiveTranscriptionEvents.UtteranceEnd, on_utterance_end)
     dg_connection.on(LiveTranscriptionEvents.Transcript, on_transcript)
     options = get_stt_options()
-    await dg_connection.start(options)
-    logger.info("Deepgram STT connection started for call %s", call_id)
+    result = await dg_connection.start(options)
+    logger.info("Deepgram STT start() returned for call %s: %s", call_id, result)
 
     media_frame_count = 0
 

@@ -9,13 +9,27 @@ async def main():
     api_key = os.getenv("DEEPGRAM_API_KEY")
     print("Using Deepgram API key:", api_key[:10] + "..." if api_key else "None")
     client = DeepgramClient(api_key)
-    live = client.listen.asynclive.v("1")
-    
+    live = client.listen.asyncwebsocket.v("1")
+
+    async def on_open(self, open_response, **kwargs):
+        print("Deepgram WebSocket OPEN:", open_response)
+
     async def on_transcript(self, result, **kwargs):
-        print("Transcript:", result)
-        
+        alt = result.channel.alternatives[0]
+        if alt.transcript:
+            print(f"Transcript (is_final={result.is_final}, speech_final={result.speech_final}): {alt.transcript}")
+
+    async def on_error(self, error, **kwargs):
+        print("Deepgram ERROR:", error)
+
+    async def on_close(self, *args, **kwargs):
+        print("Deepgram CLOSE")
+
+    live.on(LiveTranscriptionEvents.Open, on_open)
     live.on(LiveTranscriptionEvents.Transcript, on_transcript)
-    
+    live.on(LiveTranscriptionEvents.Error, on_error)
+    live.on(LiveTranscriptionEvents.Close, on_close)
+
     options = LiveOptions(
         model="nova-2-phonecall",
         language="en-US",
@@ -27,17 +41,21 @@ async def main():
         encoding="mulaw",
         sample_rate=8000,
     )
-    
-    print("Starting Deepgram live connection...")
+
+    print("Starting Deepgram connection (asyncwebsocket)...")
     try:
-        await live.start(options)
-        print("Deepgram live connection started successfully!")
-        await asyncio.sleep(2)
-        print("Finishing Deepgram live connection...")
+        result = await live.start(options)
+        print(f"start() returned: {result}")
+        # Send some silent mulaw audio to verify send() works
+        silent_frame = b'\xff' * 160  # 160 bytes of mulaw silence
+        await live.send(silent_frame)
+        print("Sent 160 bytes of silent audio — no send error")
+        await asyncio.sleep(3)
+        print("Finishing Deepgram connection...")
         await live.finish()
         print("Success!")
     except Exception as e:
-        print("Failed to connect/start:", e)
+        print("Failed:", type(e).__name__, e)
 
 if __name__ == "__main__":
     asyncio.run(main())

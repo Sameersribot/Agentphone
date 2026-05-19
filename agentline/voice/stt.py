@@ -11,9 +11,12 @@ logger = logging.getLogger(__name__)
 
 
 def create_deepgram_connection():
-    """Create a new Deepgram live transcription connection."""
+    """Create a new Deepgram live transcription connection.
+
+    Uses asyncwebsocket (current API) instead of deprecated asynclive.
+    """
     client = DeepgramClient(settings.DEEPGRAM_API_KEY)
-    return client.listen.asynclive.v("1")
+    return client.listen.asyncwebsocket.v("1")
 
 
 def get_stt_options() -> LiveOptions:
@@ -33,4 +36,3 @@ def get_stt_options() -> LiveOptions:
         encoding="mulaw",
         sample_rate=8000,
     )
-
