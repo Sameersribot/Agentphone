@@ -145,15 +145,23 @@ async def health():
 async def debug_urls():
     """Show the callback URLs that providers will receive — useful for debugging."""
     from agentline.config import settings
+    base = settings.base_url_clean
+    ws_base = base.replace("https://", "wss://").replace("http://", "ws://")
     return {
         "base_url_raw": settings.BASE_URL,
-        "base_url_clean": settings.base_url_clean,
+        "base_url_clean": base,
         "signalwire": {
-            "answer_url": f"{settings.base_url_clean}/signalwire/answer/call_TEST",
-            "gathered_url": f"{settings.base_url_clean}/signalwire/gathered/call_TEST",
-            "hangup_url": f"{settings.base_url_clean}/signalwire/hangup/call_TEST",
-            "inbound_url": f"{settings.base_url_clean}/signalwire/inbound",
-            "inbound_hangup_url": f"{settings.base_url_clean}/signalwire/inbound_hangup",
-            "sms_url": f"{settings.base_url_clean}/signalwire/sms",
+            "answer_url": f"{base}/signalwire/answer/call_TEST",
+            "stream_ws_url": f"{ws_base}/signalwire/stream/call_TEST",
+            "hangup_url": f"{base}/signalwire/hangup/call_TEST",
+            "inbound_url": f"{base}/signalwire/inbound",
+            "inbound_hangup_url": f"{base}/signalwire/inbound_hangup",
+            "sms_url": f"{base}/signalwire/sms",
+        },
+        "voice_pipeline": {
+            "stt": "Deepgram Nova-2 ($0.006/min)",
+            "tts": "Cartesia Sonic ($0.002/min)",
+            "llm": "GPT-4o-mini / GPT-4o",
         },
     }
+

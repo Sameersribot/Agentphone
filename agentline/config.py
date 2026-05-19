@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     # Voice Pipeline — STT (Deepgram)
     DEEPGRAM_API_KEY: str = ""
 
+    # Voice Pipeline — TTS (Cartesia)
+    CARTESIA_API_KEY: str = ""
+
     # App
     SECRET_KEY: str = "change-me-in-production"
     BASE_URL: str = "http://localhost:8000"

@@ -1,17 +1,23 @@
 """
-AgentLine — Voice Pipeline
-Orchestrates the full voice loop: Plivo audio → Deepgram STT → GPT-4o → Cartesia TTS → Plivo audio.
+AgentLine — Voice Pipeline (Provider-Agnostic)
+Orchestrates the full voice loop: Provider audio → Deepgram STT → LLM → Cartesia TTS → Provider audio.
+
+Supports both SignalWire <Connect><Stream> and Plivo bidirectional WebSocket.
 
 Architecture:
-  Plivo WS (raw mulaw audio in)
+  Provider WS (raw mulaw audio in)
       ↓
   Deepgram (streaming STT)
       ↓ [on utterance end]
-  GPT-4o (generate response)
+  LLM (generate response)
       ↓
-  Cartesia (streaming TTS → raw mulaw)
+  Cartesia (TTS → raw mulaw)
       ↓
-  Plivo WS (audio back to caller)
+  Provider WS (audio back to caller)
+
+Cost savings vs SignalWire <Gather>+<Say>:
+  SignalWire STT: $0.0675/min  → Deepgram: $0.006/min  (~90% cheaper)
+  SignalWire TTS: $0.003/min   → Cartesia: ~$0.002/min  (comparable)
 """
 
 import asyncio
@@ -30,15 +36,38 @@ from agentline.voice.tts import tts_cartesia
 
 logger = logging.getLogger(__name__)
 
+# Default Cartesia voice ID — Sonic English female (natural sounding)
+DEFAULT_VOICE_ID = "a0e99841-438c-4a64-b679-ae501e7d6091"
 
-async def send_audio(ws, audio_bytes: bytes):
-    """Send audio back to Plivo over the media WebSocket (bidirectional)."""
+# ── Provider-specific audio send helpers ──────────────────────────
+
+async def _send_audio_signalwire(ws, audio_bytes: bytes, stream_sid: str):
+    """Send audio back to caller via SignalWire <Connect><Stream> WebSocket."""
     payload = base64.b64encode(audio_bytes).decode("ascii")
-    # Plivo bidirectional stream uses the 'playAudio' event
+    # SignalWire bidirectional stream expects 'media' event with streamSid
+    await ws.send_json({
+        "event": "media",
+        "streamSid": stream_sid,
+        "media": {
+            "payload": payload,
+        },
+    })
+
+
+async def _send_audio_plivo(ws, audio_bytes: bytes, _stream_sid: str = ""):
+    """Send audio back to caller via Plivo bidirectional WebSocket."""
+    payload = base64.b64encode(audio_bytes).decode("ascii")
     await ws.send_json({
         "event": "playAudio",
         "media": {"payload": payload, "contentType": "audio/x-mulaw;rate=8000"},
     })
+
+
+# Provider send function registry
+PROVIDER_SEND = {
+    "signalwire": _send_audio_signalwire,
+    "plivo": _send_audio_plivo,
+}
 
 
 async def run_pipeline(
@@ -48,31 +77,39 @@ async def run_pipeline(
     initial_greeting: str | None,
     voice_id: str,
     model_tier: str,
+    provider: str = "signalwire",
 ):
     """
     Main voice pipeline coroutine. One instance per active call.
-    Bridges Plivo audio ↔ Deepgram STT ↔ LLM ↔ Cartesia TTS.
+    Bridges Provider audio ↔ Deepgram STT ↔ LLM ↔ Cartesia TTS.
+
+    Args:
+        provider_ws: WebSocket connection to the telephony provider
+        call_id: Internal call ID
+        system_prompt: System prompt for the LLM
+        initial_greeting: Optional greeting to speak when call starts
+        voice_id: Cartesia voice ID
+        model_tier: LLM model tier (turbo/balanced/max)
+        provider: 'signalwire' or 'plivo'
     """
+    voice_id = voice_id or DEFAULT_VOICE_ID
+    send_audio = PROVIDER_SEND.get(provider, _send_audio_signalwire)
+
     conversation_history: list[dict] = []
     transcript_turns: list[dict] = []
+    stream_sid = ""  # Set when we receive the 'start'/'connected' event
 
-    # 1. Send initial greeting if configured
-    if initial_greeting:
-        try:
-            audio = await tts_cartesia(initial_greeting, voice_id)
-            await send_audio(provider_ws, audio)
-            transcript_turns.append({
-                "role": "agent",
-                "text": initial_greeting,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
-            logger.info("Sent initial greeting for call %s", call_id)
-        except Exception as e:
-            logger.error("Failed to send greeting for call %s: %s", call_id, e)
+    # 1. Wait for stream start event before sending greeting
+    # We'll handle this in the message loop below
 
     # 2. Set up Deepgram streaming STT
     dg_connection = create_deepgram_connection()
     utterance_buffer: list[str] = []
+
+    # Flag to track if greeting was sent
+    greeting_sent = asyncio.Event()
+    if not initial_greeting:
+        greeting_sent.set()
 
     # This event fires for each transcript segment
     async def on_transcript(self, result, **kwargs):
@@ -97,6 +134,13 @@ async def run_pipeline(
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             })
 
+            # Save transcript incrementally
+            async with get_db_conn() as db:
+                await db.execute(
+                    "UPDATE calls SET transcript=$1 WHERE id=$2",
+                    json.dumps(transcript_turns), call_id,
+                )
+
             # 3. Get LLM response
             conversation_history.append({"role": "user", "content": full_utterance})
             reply = await llm_response(system_prompt, conversation_history, model_tier)
@@ -110,10 +154,17 @@ async def run_pipeline(
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             })
 
+            # Save transcript with agent reply
+            async with get_db_conn() as db:
+                await db.execute(
+                    "UPDATE calls SET transcript=$1 WHERE id=$2",
+                    json.dumps(transcript_turns), call_id,
+                )
+
             # 4. TTS and send audio back
             try:
                 audio = await tts_cartesia(reply, voice_id)
-                await send_audio(provider_ws, audio)
+                await send_audio(provider_ws, audio, stream_sid)
             except Exception as e:
                 logger.error("TTS/send failed for call %s: %s", call_id, e)
 
@@ -121,30 +172,58 @@ async def run_pipeline(
     options = get_stt_options()
     await dg_connection.start(options)
 
-    # 5. Forward audio from Plivo → Deepgram
+    # 5. Forward audio from Provider → Deepgram
     try:
         async for message in provider_ws.iter_text():
             data = json.loads(message)
             event = data.get("event", "")
 
             if event == "media":
-                audio_bytes = base64.b64decode(data["media"]["payload"])
-                await dg_connection.send(audio_bytes)
-            elif event == "start":
-                logger.info("Plivo stream started for call %s", call_id)
+                # Both SignalWire and Plivo use {"event":"media","media":{"payload":"..."}}
+                audio_payload = data.get("media", {}).get("payload", "")
+                if audio_payload:
+                    audio_bytes = base64.b64decode(audio_payload)
+                    await dg_connection.send(audio_bytes)
+
+            elif event in ("start", "connected"):
+                # SignalWire sends 'connected' then 'start' with metadata
+                if "start" in data or "streamSid" in data:
+                    stream_sid = data.get("start", {}).get("streamSid", "") or data.get("streamSid", "")
+                logger.info(
+                    "%s stream started for call %s (streamSid: %s)",
+                    provider.capitalize(), call_id, stream_sid,
+                )
+
+                # Send initial greeting now that stream is ready
+                if initial_greeting and not greeting_sent.is_set():
+                    try:
+                        audio = await tts_cartesia(initial_greeting, voice_id)
+                        await send_audio(provider_ws, audio, stream_sid)
+                        transcript_turns.append({
+                            "role": "agent",
+                            "text": initial_greeting,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        })
+                        logger.info("Sent initial greeting for call %s", call_id)
+                        greeting_sent.set()
+                    except Exception as e:
+                        logger.error("Failed to send greeting for call %s: %s", call_id, e)
+                        greeting_sent.set()
+
             elif event == "stop":
-                logger.info("Plivo sent stop event for call %s", call_id)
+                logger.info("%s sent stop event for call %s", provider.capitalize(), call_id)
                 break
+
     except Exception as e:
         logger.info("WebSocket closed for call %s: %s", call_id, e)
     finally:
         await dg_connection.finish()
 
-        # Save transcript to DB
+        # Save final transcript to DB
         async with get_db_conn() as db:
             await db.execute(
                 """UPDATE calls
-                   SET status='completed', transcript=$1, ended_at=now()
+                   SET transcript=$1, ended_at=now()
                    WHERE id=$2""",
                 json.dumps(transcript_turns),
                 call_id,

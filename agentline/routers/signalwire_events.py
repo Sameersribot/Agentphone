@@ -1,12 +1,15 @@
 """
-AgentLine — SignalWire Events Router (Hosted LLM Pattern)
+AgentLine — SignalWire Events Router (WebSocket Streaming Pipeline)
 Voice Architecture for US numbers:
-  STT: SignalWire <Gather input="speech"> (real-time)
-  LLM: Internal Hosted LLM (we pass speech to our LLM, generate response)
-  TTS: SignalWire <Say> (instant)
+  STT: Deepgram Nova-2 via WebSocket ($0.006/min — 90% cheaper than SignalWire <Gather>)
+  LLM: Internal Hosted LLM (GPT-4o-mini / GPT-4o)
+  TTS: Cartesia Sonic via API ($0.002/min — comparable to SignalWire <Say>)
 
-  Flow: caller speaks → <Gather> STT → Internal LLM generates response
-  → <Say> response → <Gather> next turn.
+  Flow: SignalWire <Connect><Stream> → WebSocket → Deepgram STT
+        → LLM → Cartesia TTS → WebSocket → caller hears response.
+
+  Previous architecture used <Gather input="speech"> + <Say> which cost
+  $0.20/2min. New architecture costs ~$0.075/2min (63% savings).
 """
 
 import secrets
@@ -16,12 +19,12 @@ from datetime import datetime, timezone
 
 import httpx
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 
 from agentline.config import settings
 from agentline.database import get_db_conn
-from agentline.voice.llm import llm_response
+from agentline.voice.pipeline import run_pipeline, DEFAULT_VOICE_ID
 from agentline.billing import calculate_call_cost, debit_account
 from agentline.signalwire_client import _get_auth, _get_base_url
 
@@ -41,24 +44,6 @@ def _escape_xml(text: str) -> str:
         .replace("'", "&apos;")
     )
 
-def _gather_xml(call_id: str, prompt: str = "I am listening.") -> str:
-    """
-    Generate XML: speak a prompt, then gather caller speech in real-time.
-
-    Uses <Gather input="speech"> for instant STT instead of <Record> + Deepgram.
-    SignalWire transcribes speech live — result arrives as SpeechResult in the callback.
-    """
-    gather_url = f"{settings.base_url_clean}/signalwire/gathered/{call_id}"
-    return f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Gather input="speech" action="{gather_url}" method="POST"
-            speechTimeout="3" timeout="10" language="en-US">
-        <Say voice="alice">{_escape_xml(prompt)}</Say>
-    </Gather>
-    <Say voice="alice">I did not hear anything. Goodbye.</Say>
-</Response>"""
-
-
 def _parse_transcript(raw) -> list:
     if not raw:
         return []
@@ -72,20 +57,88 @@ def _parse_transcript(raw) -> list:
     return []
 
 
-async def _generate_hosted_llm_response(agent: dict, transcript: list, call_id: str) -> str:
-    """Generate response internally for hosted mode agents."""
-    logger.info("Call %s — using Hosted Mode internal LLM", call_id)
-    system_prompt = (
-        (agent.get("system_prompt") if agent else None)
-        or "You are a helpful voice assistant. Keep responses brief and conversational."
-    )
-    model_tier = (agent.get("model_tier") if agent else None) or "balanced"
+def _stream_xml(call_id: str) -> str:
+    """
+    Generate XML: connect to our WebSocket streaming pipeline.
 
-    agent_reply = await llm_response(system_prompt, transcript, model_tier)
-    if not agent_reply:
-        agent_reply = "I'm sorry, I didn't catch that. Could you repeat?"
-    logger.info("Call %s — Hosted Mode LLM response: %s", call_id, agent_reply[:80])
-    return agent_reply
+    Uses <Connect><Stream> for bidirectional audio streaming.
+    Audio goes to Deepgram STT (not SignalWire's expensive $0.0675/min STT).
+    """
+    # Use wss:// for production, ws:// for local development
+    base = settings.base_url_clean
+    if base.startswith("https://"):
+        ws_base = base.replace("https://", "wss://")
+    elif base.startswith("http://"):
+        ws_base = base.replace("http://", "ws://")
+    else:
+        ws_base = f"wss://{base}"
+
+    stream_url = f"{ws_base}/signalwire/stream/{call_id}"
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Connect>
+        <Stream url="{stream_url}" />
+    </Connect>
+</Response>"""
+
+
+# ────────────────────────────────────────────────────────────
+# Voice — WebSocket Streaming Pipeline (Deepgram STT + Cartesia TTS)
+# This replaces the expensive <Gather>+<Say> pattern
+# ────────────────────────────────────────────────────────────
+
+@router.websocket("/stream/{call_id}")
+async def signalwire_stream(websocket: WebSocket, call_id: str):
+    """
+    WebSocket endpoint for SignalWire <Connect><Stream>.
+
+    Receives raw mulaw audio from SignalWire, processes it through:
+      Deepgram STT → LLM → Cartesia TTS
+    and sends audio back to the caller.
+
+    This replaces SignalWire's built-in <Gather> + <Say> and saves ~63% on costs.
+    """
+    await websocket.accept()
+    logger.info("WebSocket stream connected for call %s", call_id)
+
+    # Load call and agent context
+    system_prompt = "You are a helpful voice assistant. Keep responses brief and conversational."
+    initial_greeting = "Hello, how can I help you today?"
+    voice_id = DEFAULT_VOICE_ID
+    model_tier = "balanced"
+
+    try:
+        async with get_db_conn() as db:
+            call = await db.fetchrow("SELECT * FROM calls WHERE id=$1", call_id)
+            if call:
+                agent = await db.fetchrow("SELECT * FROM agents WHERE id=$1", call["agent_id"])
+                if agent:
+                    system_prompt = agent.get("system_prompt") or system_prompt
+                    initial_greeting = agent.get("initial_greeting") or initial_greeting
+                    voice_id = agent.get("voice_id") or DEFAULT_VOICE_ID
+                    model_tier = agent.get("model_tier") or "balanced"
+                if call.get("system_prompt"):
+                    # Per-call system prompt override
+                    system_prompt = call["system_prompt"]
+    except Exception as e:
+        logger.warning("Failed to load agent context for call %s: %s", call_id, e)
+
+    try:
+        await run_pipeline(
+            provider_ws=websocket,
+            call_id=call_id,
+            system_prompt=system_prompt,
+            initial_greeting=initial_greeting,
+            voice_id=voice_id,
+            model_tier=model_tier,
+            provider="signalwire",
+        )
+    except WebSocketDisconnect:
+        logger.info("WebSocket disconnected for call %s", call_id)
+    except Exception as e:
+        logger.error("Pipeline error for call %s: %s", call_id, e)
+    finally:
+        logger.info("WebSocket stream ended for call %s", call_id)
 
 
 # ────────────────────────────────────────────────────────────
@@ -94,7 +147,7 @@ async def _generate_hosted_llm_response(agent: dict, transcript: list, call_id: 
 
 @router.post("/answer/{call_id}")
 async def signalwire_answer(request: Request, call_id: str):
-    """Call answered — speak greeting, then gather caller's speech in real-time."""
+    """Call answered — connect to our streaming pipeline via WebSocket."""
     form = await request.form()
     call_sid = form.get("CallSid", "")
     logger.info("Call %s answered (SignalWire SID: %s)", call_id, call_sid)
@@ -106,87 +159,13 @@ async def signalwire_answer(request: Request, call_id: str):
                 call_sid, call_id,
             )
 
-    greeting = "Hello, how can I help you today?"
-    async with get_db_conn() as db:
-        call = await db.fetchrow("SELECT * FROM calls WHERE id=$1", call_id)
-        if call:
-            agent = await db.fetchrow("SELECT * FROM agents WHERE id=$1", call["agent_id"])
-            if agent and agent.get("initial_greeting"):
-                greeting = agent["initial_greeting"]
-
-    xml = _gather_xml(call_id, greeting)
+    # Return <Connect><Stream> XML to start the WebSocket pipeline
+    xml = _stream_xml(call_id)
     return _xml(xml)
 
 
 # ────────────────────────────────────────────────────────────
-# Voice — Gather Callback (Hosted LLM Pattern)
-# ────────────────────────────────────────────────────────────
-
-@router.post("/gathered/{call_id}")
-async def signalwire_gathered(request: Request, call_id: str):
-    """
-    Real-time speech handler — hosted LLM pattern.
-
-    Flow:
-      1. SignalWire transcribes speech in real-time (SpeechResult)
-      2. We pass speech + conversation history to our internal hosted LLM
-      3. We speak the response and listen for next speech
-    """
-    form = await request.form()
-    speech_text = form.get("SpeechResult", "").strip()
-    confidence = form.get("Confidence", "0")
-    call_sid = form.get("CallSid", "")
-
-    logger.info("Call %s — gathered speech (confidence=%s): '%s'", call_id, confidence, speech_text)
-
-    if not speech_text:
-        xml = _gather_xml(call_id, "I didn't catch that. Could you say that again?")
-        return _xml(xml)
-
-    # ── Step 1: Load call + agent context ──
-    async with get_db_conn() as db:
-        call = await db.fetchrow("SELECT * FROM calls WHERE id=$1", call_id)
-        if not call:
-            return _xml('<?xml version="1.0" encoding="UTF-8"?><Response><Say>Call not found.</Say></Response>')
-
-        agent = await db.fetchrow("SELECT * FROM agents WHERE id=$1", call["agent_id"])
-
-        # Build conversation history and add caller's speech
-        transcript = _parse_transcript(call.get("transcript"))
-        transcript.append({
-            "role": "human",
-            "text": speech_text,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        })
-
-        # Save transcript immediately
-        await db.execute(
-            "UPDATE calls SET transcript=$1 WHERE id=$2",
-            json.dumps(transcript), call_id,
-        )
-
-    # ── Step 2: Get Agent Response (Hosted Mode) ──
-    agent_reply = await _generate_hosted_llm_response(agent, transcript, call_id)
-
-    # ── Step 3: Save agent reply to transcript ──
-    transcript.append({
-        "role": "agent",
-        "text": agent_reply,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    })
-    async with get_db_conn() as db:
-        await db.execute(
-            "UPDATE calls SET transcript=$1 WHERE id=$2",
-            json.dumps(transcript), call_id,
-        )
-
-    # Return agent's response + listen for next speech
-    xml = _gather_xml(call_id, agent_reply)
-    return _xml(xml)
-
-
-# ────────────────────────────────────────────────────────────
-# Voice — SMS Callback
+# Voice — SMS Callback (unchanged)
 # ────────────────────────────────────────────────────────────
 
 @router.post("/sms")
@@ -414,12 +393,8 @@ async def signalwire_inbound_call(request: Request):
         except Exception as e:
             logger.warning("Failed to set StatusCallback for inbound call %s: %s", call_id, e)
 
-    greeting = "Hello, how can I help you today?"
-    if agent and agent.get("initial_greeting"):
-        greeting = agent["initial_greeting"]
-
-    # Use <Gather> for real-time speech recognition (NOT <Record>)
-    xml = _gather_xml(call_id, greeting)
+    # Connect to our streaming pipeline via WebSocket (NOT <Gather>)
+    xml = _stream_xml(call_id)
     return _xml(xml)
 
 
