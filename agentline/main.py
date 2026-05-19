@@ -28,12 +28,66 @@ async def lifespan(app: FastAPI):
     logger.info("Starting AgentLine...")
     await init_db()
     await init_redis()
+
+    # Reconfigure existing numbers with correct StatusCallback for billing
+    try:
+        await _reconfigure_number_callbacks()
+    except Exception as e:
+        logger.warning("Non-fatal: failed to reconfigure number callbacks on startup: %s", e)
+
     logger.info("AgentLine ready.")
     yield
     logger.info("Shutting down AgentLine...")
     await close_redis()
     await close_db()
     logger.info("AgentLine stopped.")
+
+
+async def _reconfigure_number_callbacks():
+    """
+    Ensure all active SignalWire numbers have the correct StatusCallback URL
+    so inbound call hangups are properly received and billed.
+    Runs once on startup — safe to call repeatedly (idempotent).
+    """
+    import httpx
+    from agentline.config import settings
+    from agentline.database import get_db_conn
+
+    if not all([settings.SIGNALWIRE_PROJECT_ID, settings.SIGNALWIRE_TOKEN, settings.SIGNALWIRE_SPACE_URL]):
+        logger.info("Skipping number callback reconfiguration — SignalWire not configured.")
+        return
+
+    sw_base = f"https://{settings.SIGNALWIRE_SPACE_URL}/api/laml/2010-04-01/Accounts/{settings.SIGNALWIRE_PROJECT_ID}"
+    auth = (settings.SIGNALWIRE_PROJECT_ID, settings.SIGNALWIRE_TOKEN)
+    base = settings.base_url_clean
+
+    async with get_db_conn() as db:
+        rows = await db.fetch(
+            "SELECT id, phone_number, provider_id FROM phone_numbers WHERE status = 'active'"
+        )
+
+    if not rows:
+        return
+
+    logger.info("Reconfiguring StatusCallback on %d active number(s)...", len(rows))
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        for r in rows:
+            try:
+                await client.post(
+                    f"{sw_base}/IncomingPhoneNumbers/{r['provider_id']}.json",
+                    auth=auth,
+                    data={
+                        "VoiceUrl": f"{base}/signalwire/inbound",
+                        "VoiceMethod": "POST",
+                        "SmsUrl": f"{base}/signalwire/sms",
+                        "SmsMethod": "POST",
+                        "StatusCallback": f"{base}/signalwire/inbound_hangup",
+                        "StatusCallbackMethod": "POST",
+                    },
+                )
+                logger.info("  ✓ %s — StatusCallback updated", r["phone_number"])
+            except Exception as e:
+                logger.warning("  ✗ %s — failed: %s", r["phone_number"], e)
 
 
 app = FastAPI(
@@ -99,6 +153,7 @@ async def debug_urls():
             "gathered_url": f"{settings.base_url_clean}/signalwire/gathered/call_TEST",
             "hangup_url": f"{settings.base_url_clean}/signalwire/hangup/call_TEST",
             "inbound_url": f"{settings.base_url_clean}/signalwire/inbound",
+            "inbound_hangup_url": f"{settings.base_url_clean}/signalwire/inbound_hangup",
             "sms_url": f"{settings.base_url_clean}/signalwire/sms",
         },
     }

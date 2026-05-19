@@ -180,7 +180,7 @@ async def provision_number(
                 "VoiceMethod": "POST",
                 "SmsUrl": f"{settings.base_url_clean}/signalwire/sms",
                 "SmsMethod": "POST",
-                "StatusCallback": f"{settings.base_url_clean}/signalwire/hangup/inbound_status",
+                "StatusCallback": f"{settings.base_url_clean}/signalwire/inbound_hangup",
                 "StatusCallbackMethod": "POST",
             }
             buy_resp = await client.post(buy_url, auth=_get_auth(), data=buy_payload)
@@ -218,6 +218,8 @@ async def configure_number_webhooks(provider_id: str) -> None:
                     "VoiceMethod": "POST",
                     "SmsUrl": f"{settings.base_url_clean}/signalwire/sms",
                     "SmsMethod": "POST",
+                    "StatusCallback": f"{settings.base_url_clean}/signalwire/inbound_hangup",
+                    "StatusCallbackMethod": "POST",
                 },
             )
             resp.raise_for_status()

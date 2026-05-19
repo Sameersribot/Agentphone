@@ -14,6 +14,8 @@ import json
 import logging
 from datetime import datetime, timezone
 
+import httpx
+
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
 
@@ -21,6 +23,7 @@ from agentline.config import settings
 from agentline.database import get_db_conn
 from agentline.voice.llm import llm_response
 from agentline.billing import calculate_call_cost, debit_account
+from agentline.signalwire_client import _get_auth, _get_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -257,7 +260,16 @@ async def signalwire_hangup(request: Request, call_id: str):
     if call_status in ("completed", "failed", "busy", "no-answer", "canceled"):
         async with get_db_conn() as db:
             call = await db.fetchrow("SELECT * FROM calls WHERE id=$1", call_id)
+            # Fallback: look up by provider call SID if call_id doesn't match
+            if not call and call_sid:
+                call = await db.fetchrow(
+                    "SELECT * FROM calls WHERE provider_call_id=$1", call_sid
+                )
+                if call:
+                    call_id = call["id"]
+                    logger.info("Hangup: resolved call by CallSid %s → %s", call_sid, call_id)
             if not call:
+                logger.warning("Hangup: no call found for id=%s sid=%s", call_id, call_sid)
                 return _xml("<Response/>")
 
             duration_secs = int(duration) if str(duration).isdigit() else 0
@@ -385,6 +397,23 @@ async def signalwire_inbound_call(request: Request):
             agent["system_prompt"] if agent else "",
         )
 
+    # Set StatusCallback on the live call so we get billed when it ends
+    if call_sid:
+        try:
+            hangup_url = f"{settings.base_url_clean}/signalwire/hangup/{call_id}"
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                await client.post(
+                    f"{_get_base_url()}/Calls/{call_sid}.json",
+                    auth=_get_auth(),
+                    data={
+                        "StatusCallback": hangup_url,
+                        "StatusCallbackMethod": "POST",
+                    },
+                )
+            logger.info("Inbound call %s — set StatusCallback to %s", call_id, hangup_url)
+        except Exception as e:
+            logger.warning("Failed to set StatusCallback for inbound call %s: %s", call_id, e)
+
     greeting = "Hello, how can I help you today?"
     if agent and agent.get("initial_greeting"):
         greeting = agent["initial_greeting"]
@@ -392,3 +421,92 @@ async def signalwire_inbound_call(request: Request):
     # Use <Gather> for real-time speech recognition (NOT <Record>)
     xml = _gather_xml(call_id, greeting)
     return _xml(xml)
+
+
+# ────────────────────────────────────────────────────────────
+# Voice — Inbound Call Hangup (number-level StatusCallback fallback)
+# ────────────────────────────────────────────────────────────
+
+@router.post("/inbound_hangup")
+async def signalwire_inbound_hangup(request: Request):
+    """
+    Fallback hangup handler for inbound calls on numbers that still have
+    the old StatusCallback URL (/signalwire/hangup/inbound_status).
+    Looks up the call by CallSid instead of our internal call_id.
+    """
+    form = await request.form()
+    call_status = form.get("CallStatus", "")
+    duration = form.get("CallDuration", form.get("Duration", "0"))
+    call_sid = form.get("CallSid", "")
+
+    logger.info("Inbound hangup (fallback): status=%s duration=%ss (SID: %s)", call_status, duration, call_sid)
+
+    if not call_sid:
+        return _xml("<Response/>")
+
+    if call_status in ("completed", "failed", "busy", "no-answer", "canceled"):
+        async with get_db_conn() as db:
+            call = await db.fetchrow(
+                "SELECT * FROM calls WHERE provider_call_id=$1", call_sid
+            )
+            if not call:
+                logger.warning("Inbound hangup: no call found for CallSid %s", call_sid)
+                return _xml("<Response/>")
+
+            call_id = call["id"]
+            duration_secs = int(duration) if str(duration).isdigit() else 0
+
+            await db.execute(
+                """UPDATE calls SET status='completed', duration_seconds=$1, ended_at=now()
+                   WHERE id=$2 AND status!='completed'""",
+                duration_secs, call_id,
+            )
+
+            # ── Billing: charge for the inbound call ──
+            if duration_secs > 0 and call.get("account_id"):
+                call_cost = calculate_call_cost(duration_secs)
+                try:
+                    await debit_account(
+                        db,
+                        call["account_id"],
+                        call_cost,
+                        txn_type="call_charge",
+                        reference_id=call_id,
+                        description=(
+                            f"Inbound call {duration_secs}s "
+                            f"({call.get('from_number', '')} -> {call.get('to_number', '')})"
+                        ),
+                    )
+                    logger.info(
+                        "Inbound call %s — billed $%.4f for %ds",
+                        call_id, call_cost, duration_secs,
+                    )
+                except ValueError as e:
+                    logger.warning(
+                        "Inbound call %s — billing failed: %s", call_id, e
+                    )
+
+            # Push event to mailbox
+            transcript = _parse_transcript(call.get("transcript"))
+            event_id = f"evt_{secrets.token_urlsafe(12)}"
+            event_type = "call.completed" if call_status == "completed" else f"call.{call_status}"
+            try:
+                await db.execute(
+                    """INSERT INTO event_mailbox
+                       (event_id, account_id, agent_id, event_type, payload)
+                       VALUES ($1, $2, $3, $4, $5)""",
+                    event_id, call.get("account_id"), call.get("agent_id"),
+                    event_type, json.dumps({
+                        "call_id": call_id,
+                        "status": call_status,
+                        "direction": "inbound",
+                        "from_number": call.get("from_number", ""),
+                        "to_number": call.get("to_number", ""),
+                        "duration_seconds": duration_secs,
+                        "transcript": transcript,
+                    }),
+                )
+            except Exception as e:
+                logger.error("Failed to push event for inbound call %s: %s", call_id, e)
+
+    return _xml("<Response/>")
