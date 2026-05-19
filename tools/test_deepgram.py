@@ -19,6 +19,10 @@ async def main():
     options = LiveOptions(
         model="nova-2-phonecall",
         language="en-US",
+        smart_format=True,
+        interim_results=False,
+        endpointing=500,
+        vad_events=True,
         encoding="mulaw",
         sample_rate=8000,
     )

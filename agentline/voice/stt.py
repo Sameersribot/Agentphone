@@ -23,7 +23,7 @@ def get_stt_options() -> LiveOptions:
         language="en-US",
         smart_format=True,
         interim_results=False,
-        utterance_end_ms=1000,
+        endpointing=500,
         vad_events=True,
         encoding="mulaw",
         sample_rate=8000,
