@@ -196,6 +196,9 @@ async def run_pipeline(
     dg_connection.on(LiveTranscriptionEvents.Transcript, on_transcript)
     options = get_stt_options()
     await dg_connection.start(options)
+    logger.info("Deepgram STT connection started for call %s", call_id)
+
+    media_frame_count = 0
 
     # Forward audio from Provider → Deepgram and handle stream lifecycle
     try:
@@ -208,7 +211,16 @@ async def run_pipeline(
                 audio_payload = data.get("media", {}).get("payload", "")
                 if audio_payload:
                     audio_bytes = base64.b64decode(audio_payload)
-                    await dg_connection.send(audio_bytes)
+                    try:
+                        await dg_connection.send(audio_bytes)
+                        media_frame_count += 1
+                        if media_frame_count in (1, 10, 50, 100):
+                            logger.info(
+                                "Call %s — forwarded %d media frames to Deepgram (%d bytes this frame)",
+                                call_id, media_frame_count, len(audio_bytes),
+                            )
+                    except Exception as e:
+                        logger.error("Call %s — failed to send audio to Deepgram: %s", call_id, e)
 
             elif event == "connected":
                 # SignalWire sends 'connected' first — just the WebSocket handshake
@@ -245,11 +257,14 @@ async def run_pipeline(
                         greeting_sent = True
 
             elif event == "stop":
-                logger.info("%s sent stop event for call %s", provider.capitalize(), call_id)
+                logger.info("%s sent stop event for call %s (received %d media frames total)", provider.capitalize(), call_id, media_frame_count)
                 break
 
+            else:
+                logger.debug("Call %s — unknown event: %s", call_id, event)
+
     except Exception as e:
-        logger.info("WebSocket closed for call %s: %s", call_id, e)
+        logger.info("WebSocket closed for call %s: %s (received %d media frames)", call_id, e, media_frame_count)
     finally:
         try:
             await dg_connection.finish()
