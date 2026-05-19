@@ -130,13 +130,15 @@ async def run_pipeline(
 
     # This event fires for each transcript segment
     async def on_transcript(self, result, **kwargs):
-        sentence = result.channel.alternatives[0].transcript
-        if not sentence:
+        # We only care about finalized transcript segments
+        if not result.is_final:
             return
 
-        utterance_buffer.append(sentence)
+        sentence = result.channel.alternatives[0].transcript
+        if sentence:
+            utterance_buffer.append(sentence)
 
-        if result.is_final and result.speech_final:
+        if result.speech_final:
             full_utterance = " ".join(utterance_buffer).strip()
             utterance_buffer.clear()
 
