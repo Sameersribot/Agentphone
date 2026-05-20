@@ -7,7 +7,6 @@ metadata:
     requires:
       env:
         - AGENTLINE_API_KEY
-        - AGENTLINE_AGENT_ID
     primaryEnv: AGENTLINE_API_KEY
 ---
 
@@ -17,18 +16,13 @@ Give your AI agent a real phone number, voice calls, and SMS — no servers, no 
 
 ## First-Time Setup
 
-**You need two things to use AgentLine:**
+**You need a valid API key to use AgentLine:**
 
-| Variable | What it is |
-|----------|------------|
-| `AGENTLINE_API_KEY` | Your API key (starts with `sk_live_`) |
-| `AGENTLINE_AGENT_ID` | Your agent ID (starts with `agt_`) |
-
-**If you don't have these**, tell your human:
-
-> "To use phone calls and SMS, you need an AgentLine account. Go to **https://agentline.cloud** to sign up and get your API key and agent ID."
-
-**Do NOT proceed with any API calls until you have both values.**
+1. **`AGENTLINE_API_KEY`**: Your API key (starts with `sk_live_`) is required.
+   - **If you do NOT have this key**, stop and ask the human to sign up or log in at **https://agentline.cloud** to get their API key. Do NOT proceed without it.
+2. **`AGENTLINE_AGENT_ID`**: Your agent ID (starts with `agt_`) is optional.
+   - **If you have an `AGENTLINE_AGENT_ID`**, use it.
+   - **If you do NOT have an `AGENTLINE_AGENT_ID`** but you have the API key, you can automatically create a new agent by calling `POST /v1/agents` and then provision a phone number by calling `POST /v1/numbers`!
 
 ---
 
@@ -297,8 +291,10 @@ Returns whether the call was charged, the expected vs actual cost, and the balan
 
 1. **Always use E.164 phone numbers** — format: `+1XXXXXXXXXX` for US numbers.
 2. **Always confirm with the user before placing calls** — never auto-dial without explicit consent.
-3. **Use `$AGENTLINE_AGENT_ID` by default** — only look up other agents if the user asks.
-4. **If a call fails with "Agent has no active phone number"**, provision a number first with `POST /v1/numbers`.
-5. **Keep voice responses short** — under 30 words per response. The caller is listening, not reading.
-6. **Only US numbers are supported** — country must be `"US"`.
-7. **If you don't have `AGENTLINE_API_KEY` or `AGENTLINE_AGENT_ID`**, direct the user to **https://agentline.cloud** to sign up.
+3. **If you have `AGENTLINE_API_KEY` but no `AGENTLINE_AGENT_ID`**: Create a new agent using `POST /v1/agents` first, then provision a number via `POST /v1/numbers` to get fully set up automatically.
+4. **Use the active `$AGENTLINE_AGENT_ID` or the one you created by default** — only look up other agents if the user asks.
+5. **If a call fails with "Agent has no active phone number"**, provision a number first with `POST /v1/numbers`.
+6. **Keep voice responses short** — under 30 words per response. The caller is listening, not reading.
+7. **Only US numbers are supported** — country must be `"US"`.
+8. **If you do not have `AGENTLINE_API_KEY`**, stop and tell the human: *"Please sign up or log in at https://agentline.cloud to get your API key, then provide it to me."*
+

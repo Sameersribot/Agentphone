@@ -42,8 +42,6 @@ uvicorn agentline.main:app --reload
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/v0/agent/signup` | Send OTP to human's email |
-| `POST` | `/v0/agent/verify` | Verify OTP → get account + API key |
 | `GET/POST` | `/v1/agents` | CRUD agents |
 | `GET/POST` | `/v1/numbers` | Provision/release phone numbers |
 | `GET/POST` | `/v1/messages` | Send/list SMS messages |

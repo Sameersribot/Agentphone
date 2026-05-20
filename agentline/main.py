@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from agentline.database import init_db, close_db
 from agentline.redis_client import init_redis, close_redis
-from agentline.routers import auth, agents, numbers, messages, calls, usage, events, signalwire_events, billing_api
+from agentline.routers import agents, numbers, messages, calls, usage, events, signalwire_events, billing_api
 
 # Configure logging
 logging.basicConfig(
@@ -107,7 +107,7 @@ app.add_middleware(
 )
 
 # Mount routers
-app.include_router(auth.router)
+
 app.include_router(agents.router)
 app.include_router(numbers.router)
 app.include_router(messages.router)
