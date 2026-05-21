@@ -226,15 +226,6 @@ curl $AGENTLINE_URL/v1/numbers \
 
 ---
 
-## Release a Phone Number
-
-```bash
-curl -X DELETE $AGENTLINE_URL/v1/numbers/<number_id> \
-  -H "Authorization: Bearer $AGENTLINE_API_KEY"
-```
-
----
-
 ## Check Balance
 
 ```bash
@@ -297,4 +288,4 @@ Returns whether the call was charged, the expected vs actual cost, and the balan
 6. **Keep voice responses short** — under 30 words per response. The caller is listening, not reading.
 7. **Only US numbers are supported** — country must be `"US"`.
 8. **If you do not have `AGENTLINE_API_KEY`**, stop and tell the human: *"Please sign up or log in at https://agentline.cloud to get your API key, then provide it to me."*
-
+9. **Do NOT release or delete phone numbers** — numbers are permanent once provisioned.

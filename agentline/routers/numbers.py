@@ -1,6 +1,6 @@
 """
 AgentLine — Numbers Router
-Phone number provisioning, listing, attachment, and release.
+Phone number provisioning, listing, attachment, and reassignment.
 Uses Plivo (IN) and SignalWire (US) for multi-provider number management.
 """
 
@@ -66,7 +66,7 @@ async def provision(
         raise HTTPException(
             409,
             f"Agent already has an active number: {existing['phone_number']} (id: {existing['id']}). "
-            "Release it first with DELETE /v1/numbers/{number_id} before provisioning a new one.",
+            "Reassign it first with PATCH /v1/numbers/{number_id}/reassign before provisioning a new one.",
         )
 
     # Check balance before provisioning ($2.00 per number)
@@ -218,7 +218,7 @@ async def attach_existing_number(
         raise HTTPException(
             409,
             f"Agent already has an active number: {existing_agent_num['phone_number']}. "
-            "Release it first before attaching a new one.",
+            "Reassign it first with PATCH /v1/numbers/{number_id}/reassign before attaching a new one.",
         )
 
     # Check if this phone number is already attached
@@ -333,31 +333,3 @@ async def reassign_number(
     return {"number_id": number_id, "agent_id": agent_id, "reassigned": True}
 
 
-@router.delete("/{number_id}")
-async def release(
-    number_id: str,
-    account=Depends(get_current_account),
-    db=Depends(get_db),
-):
-    """Release a phone number back to its provider (SignalWire)."""
-    row = await db.fetchrow(
-        "SELECT * FROM phone_numbers WHERE id = $1 AND account_id = $2",
-        number_id,
-        account["id"],
-    )
-    if not row:
-        raise HTTPException(404, "Number not found.")
-
-    try:
-        await signalwire_release_number(row["provider_id"])
-    except Exception:
-        pass  # Best effort
-
-    await db.execute(
-        """UPDATE phone_numbers
-           SET status = 'released', released_at = now()
-           WHERE id = $1""",
-        number_id,
-    )
-
-    return {"released": True, "number_id": number_id}
