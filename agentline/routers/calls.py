@@ -80,10 +80,12 @@ async def create_call(
 
     await db.execute(
         """INSERT INTO calls (id, account_id, agent_id, number_id, direction,
-           from_number, to_number, system_prompt, status, started_at)
-           VALUES ($1,$2,$3,$4,'outbound',$5,$6,$7,'initiated',$8)""",
+           from_number, to_number, system_prompt, voice_id, status, started_at)
+           VALUES ($1,$2,$3,$4,'outbound',$5,$6,$7,$8,'initiated',$9)""",
         call_id, account["id"], body.agent_id, number["id"],
-        number["phone_number"], body.to_number, system_prompt, now,
+        number["phone_number"], body.to_number, system_prompt,
+        body.voice_id,  # Per-call voice override (None = use agent/account default)
+        now,
     )
 
     try:

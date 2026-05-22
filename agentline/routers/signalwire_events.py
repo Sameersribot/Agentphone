@@ -24,7 +24,8 @@ from fastapi.responses import Response
 
 from agentline.config import settings
 from agentline.database import get_db_conn
-from agentline.voice.pipeline import run_pipeline, DEFAULT_VOICE_ID
+from agentline.voice.pipeline import run_pipeline
+from agentline.voice.voices import resolve_voice_chain, DEFAULT_VOICE_ID
 from agentline.billing import calculate_call_cost, debit_account
 from agentline.signalwire_client import _get_auth, _get_base_url
 
@@ -112,11 +113,24 @@ async def signalwire_stream(websocket: WebSocket, call_id: str):
             call = await db.fetchrow("SELECT * FROM calls WHERE id=$1", call_id)
             if call:
                 agent = await db.fetchrow("SELECT * FROM agents WHERE id=$1", call["agent_id"])
+
+                # Load account for default_voice_id
+                account = await db.fetchrow(
+                    "SELECT * FROM accounts WHERE id=$1", call["account_id"]
+                ) if call.get("account_id") else None
+
                 if agent:
                     system_prompt = agent.get("system_prompt") or system_prompt
                     initial_greeting = agent.get("initial_greeting") or initial_greeting
-                    voice_id = agent.get("voice_id") or DEFAULT_VOICE_ID
                     model_tier = agent.get("model_tier") or "balanced"
+
+                # Voice resolution chain: per-call → agent → account → default
+                voice_id = resolve_voice_chain(
+                    per_call_voice=call.get("voice_id"),
+                    agent_voice=agent.get("voice_id") if agent else None,
+                    account_voice=account.get("default_voice_id") if account else None,
+                )
+
                 if call.get("system_prompt"):
                     # Per-call system prompt override
                     system_prompt = call["system_prompt"]

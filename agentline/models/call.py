@@ -12,7 +12,7 @@ class CallRequest(BaseModel):
     to_number: str
     system_prompt: str | None = None
     initial_greeting: str | None = None
-    voice: str | None = None
+    voice_id: str | None = None  # Per-call voice override: Cartesia UUID or preset name (e.g. "female-1")
     model_tier: Literal["turbo", "balanced", "max"] = "balanced"
     from_number_id: str | None = None
 

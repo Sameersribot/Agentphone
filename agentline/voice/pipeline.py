@@ -24,7 +24,6 @@ import asyncio
 import json
 import base64
 import logging
-import re
 from datetime import datetime, timezone
 
 from deepgram import LiveTranscriptionEvents
@@ -34,28 +33,9 @@ from agentline.database import get_db_conn
 from agentline.voice.stt import create_deepgram_connection, get_stt_options
 from agentline.voice.llm import llm_response
 from agentline.voice.tts import tts_cartesia
+from agentline.voice.voices import resolve_voice_id, DEFAULT_VOICE_ID
 
 logger = logging.getLogger(__name__)
-
-# Default Cartesia voice ID — "Barbershop Man" (clear male voice, good for phone)
-DEFAULT_VOICE_ID = "a0e99841-438c-4a64-b679-ae501e7d6091"
-
-# UUID regex for validating voice IDs
-_UUID_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
-)
-
-
-def _validate_voice_id(voice_id: str | None) -> str:
-    """Ensure voice_id is a valid UUID, fall back to default if not."""
-    if voice_id and _UUID_RE.match(voice_id):
-        return voice_id
-    if voice_id:
-        logger.warning(
-            "Invalid Cartesia voice_id '%s' (not a UUID) — using default %s",
-            voice_id, DEFAULT_VOICE_ID,
-        )
-    return DEFAULT_VOICE_ID
 
 
 # ── Provider-specific audio send helpers ──────────────────────────
@@ -112,11 +92,11 @@ async def run_pipeline(
         call_id: Internal call ID
         system_prompt: System prompt for the LLM
         initial_greeting: Optional greeting to speak when call starts
-        voice_id: Cartesia voice ID (must be a valid UUID)
+        voice_id: Cartesia voice ID (UUID or preset name — resolved before use)
         model_tier: LLM model tier (turbo/balanced/max)
         provider: 'signalwire' or 'plivo'
     """
-    voice_id = _validate_voice_id(voice_id)
+    voice_id = resolve_voice_id(voice_id)
     send_audio = PROVIDER_SEND.get(provider, _send_audio_signalwire)
 
     conversation_history: list[dict] = []

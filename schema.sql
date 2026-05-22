@@ -8,6 +8,7 @@ CREATE TABLE accounts (
     human_email      TEXT UNIQUE NOT NULL,
     supabase_user_id TEXT UNIQUE,   -- Links to Supabase Auth user
     balance          NUMERIC(12,4) NOT NULL DEFAULT 10.0000,  -- USD balance, starts with $10
+    default_voice_id TEXT,          -- Account-level default Cartesia voice UUID
     created_at       TIMESTAMPTZ DEFAULT now()
 );
 
@@ -27,7 +28,7 @@ CREATE TABLE agents (
     voice_mode       TEXT DEFAULT 'hosted',
     system_prompt    TEXT,
     initial_greeting TEXT,
-    voice_id         TEXT DEFAULT 'cartesia-sonic-english',
+    voice_id         TEXT,          -- Cartesia UUID, preset name, or NULL (resolves to system default)
     model_tier       TEXT DEFAULT 'balanced',
     transfer_number  TEXT,
     voicemail_message TEXT,
@@ -62,6 +63,7 @@ CREATE TABLE calls (
     to_number         TEXT NOT NULL,
     status            TEXT DEFAULT 'initiated',
     system_prompt     TEXT,
+    voice_id          TEXT,  -- Per-call voice override (Cartesia UUID)
     duration_seconds  INTEGER,
     transcript        JSONB DEFAULT '[]',
     started_at        TIMESTAMPTZ DEFAULT now(),

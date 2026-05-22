@@ -12,7 +12,7 @@ class AgentCreate(BaseModel):
     voice_mode: Literal["hosted", "webhook"] = "hosted"
     system_prompt: str | None = None
     initial_greeting: str | None = None
-    voice_id: str = "cartesia-sonic-english"
+    voice_id: str | None = None  # Cartesia UUID or preset name (e.g. "female-1"); None = system default
     model_tier: Literal["turbo", "balanced", "max"] = "balanced"
     transfer_number: str | None = None
     voicemail_message: str | None = None
@@ -36,7 +36,7 @@ class AgentOut(BaseModel):
     voice_mode: str
     system_prompt: str | None = None
     initial_greeting: str | None = None
-    voice_id: str
+    voice_id: str | None = None
     model_tier: str
     transfer_number: str | None = None
     voicemail_message: str | None = None
