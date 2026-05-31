@@ -179,24 +179,32 @@ async def signalwire_answer(request: Request, call_id: str):
 
 
 # ────────────────────────────────────────────────────────────
-# Voice — SMS Callback (unchanged)
+# SMS — Inbound SMS Callback
 # ────────────────────────────────────────────────────────────
 
 @router.post("/sms")
 async def signalwire_sms_callback(request: Request):
+    """
+    Receive inbound SMS from SignalWire.
+
+    Saves the message to DB, pushes an sms.received event to the
+    event mailbox (so agents polling GET /v1/events get notified),
+    and dispatches to any registered customer webhooks.
+    """
     form = await request.form()
     from_number = form.get("From", "")
     to_number = form.get("To", "")
     text = form.get("Body", "")
     message_sid = form.get("MessageSid", "")
-    msg_type = "sms"
+    num_media = int(form.get("NumMedia", "0") or "0")
+    media_url = form.get("MediaUrl0", "") if num_media > 0 else ""
 
     if from_number and not from_number.startswith("+"):
         from_number = f"+{from_number}"
     if to_number and not to_number.startswith("+"):
         to_number = f"+{to_number}"
 
-    logger.info("Inbound %s from %s to %s: %s", msg_type, from_number, to_number, text[:80])
+    logger.info("Inbound SMS from %s to %s: %s", from_number, to_number, text[:80])
 
     async with get_db_conn() as db:
         number = await db.fetchrow(
@@ -206,6 +214,7 @@ async def signalwire_sms_callback(request: Request):
         if not number:
             return {"status": "unknown_number"}
 
+        # Upsert conversation
         conv = await db.fetchrow(
             "SELECT * FROM conversations WHERE number_id=$1 AND contact_number=$2",
             number["id"], from_number,
@@ -213,24 +222,74 @@ async def signalwire_sms_callback(request: Request):
         if not conv:
             conv_id = f"conv_{secrets.token_urlsafe(12)}"
             await db.execute(
-                """INSERT INTO conversations (id, account_id, agent_id, number_id, contact_number)
-                   VALUES ($1,$2,$3,$4,$5)""",
+                """INSERT INTO conversations (id, account_id, agent_id, number_id, contact_number, last_message_at)
+                   VALUES ($1,$2,$3,$4,$5,now())""",
                 conv_id, number["account_id"], number["agent_id"],
                 number["id"], from_number,
             )
         else:
             conv_id = conv["id"]
+            await db.execute(
+                "UPDATE conversations SET last_message_at = now() WHERE id = $1",
+                conv_id,
+            )
 
+        # Save inbound message
         msg_id = f"msg_{secrets.token_urlsafe(12)}"
         await db.execute(
             """INSERT INTO messages
                (id, account_id, agent_id, number_id, conversation_id,
-                provider_message_id, direction, from_number, to_number, body)
-               VALUES ($1,$2,$3,$4,$5,$6,'inbound',$7,$8,$9)""",
+                provider_message_id, direction, from_number, to_number, body, media_url)
+               VALUES ($1,$2,$3,$4,$5,$6,'inbound',$7,$8,$9,$10)""",
             msg_id, number["account_id"], number["agent_id"],
             number["id"], conv_id, message_sid,
-            from_number, to_number, text,
+            from_number, to_number, text, media_url or None,
         )
+
+        # ── Push sms.received event to event mailbox ──
+        event_id = f"evt_{secrets.token_urlsafe(12)}"
+        event_payload = {
+            "message_id": msg_id,
+            "conversation_id": conv_id,
+            "from_number": from_number,
+            "to_number": to_number,
+            "body": text,
+            "media_url": media_url or None,
+        }
+
+        try:
+            await db.execute(
+                """INSERT INTO event_mailbox
+                   (event_id, account_id, agent_id, event_type, payload)
+                   VALUES ($1, $2, $3, 'sms.received', $4)""",
+                event_id,
+                number["account_id"],
+                number["agent_id"],
+                json.dumps(event_payload),
+            )
+            logger.info(
+                "Inbound SMS %s — pushed sms.received event (from %s)",
+                msg_id, from_number,
+            )
+        except Exception as e:
+            logger.error("Failed to push sms.received event for %s: %s", msg_id, e)
+
+    # ── Dispatch to customer webhook (fire-and-forget) ──
+    try:
+        from agentline.webhook_dispatcher import dispatch_webhook
+        await dispatch_webhook(number["account_id"], number["agent_id"], {
+            "event": "sms.received",
+            "message_id": msg_id,
+            "conversation_id": conv_id,
+            "agent_id": number["agent_id"],
+            "number_id": number["id"],
+            "from_number": from_number,
+            "to_number": to_number,
+            "body": text,
+            "media_url": media_url or None,
+        })
+    except Exception as e:
+        logger.warning("Webhook dispatch failed for inbound SMS %s: %s", msg_id, e)
 
     return _xml("<Response/>")
 
