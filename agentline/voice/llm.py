@@ -77,3 +77,77 @@ async def llm_response(
     except Exception as e:
         logger.error("OpenAI API error: %s", e)
         return "I'm sorry, I'm having trouble processing that. Could you repeat?"
+
+
+# ── Sentence splitting for streaming ──────────────────────────────
+
+def _extract_sentence(text: str) -> tuple[str, str]:
+    """Extract a complete sentence from the front of *text*.
+
+    Returns (sentence, remainder).  If no sentence boundary is found,
+    returns ("", original_text) so the caller keeps buffering.
+
+    Rules:
+      1. Split on sentence-ending punctuation (.!?) followed by a space.
+      2. For long buffers (>100 chars), also split on comma + space to
+         keep TTS chunks short enough for natural pacing.
+    """
+    for i, ch in enumerate(text):
+        if ch in ".!?" and i + 1 < len(text) and text[i + 1] == " ":
+            return text[: i + 1].strip(), text[i + 2 :]
+    # Long buffer fallback — split on comma to avoid holding too much
+    if len(text) > 100:
+        for i, ch in enumerate(text):
+            if ch == "," and i > 20 and i + 1 < len(text) and text[i + 1] == " ":
+                return text[: i + 1].strip(), text[i + 2 :]
+    return "", text
+
+
+async def llm_response_stream(
+    system_prompt: str,
+    conversation_history: list[dict],
+    model_tier: str = "balanced",
+):
+    """Yield the LLM reply in sentence-sized chunks as tokens stream in.
+
+    Each yielded string is a complete sentence (or clause for very long
+    sentences) suitable for immediate TTS synthesis.  This lets the caller
+    pipeline TTS while the LLM is still generating — dramatically reducing
+    time-to-first-audio.
+    """
+    model = MODEL_MAP.get(model_tier, MODEL_MAP["balanced"])
+    messages = [
+        {"role": "system", "content": system_prompt or "You are a helpful voice assistant. Keep responses brief and conversational."},
+    ]
+    for turn in conversation_history:
+        messages.append(_normalize_turn(turn))
+
+    logger.debug("LLM stream request: model=%s, %d messages", model, len(messages))
+
+    try:
+        stream = await client.chat.completions.create(
+            model=model,
+            max_tokens=200,
+            messages=messages,
+            stream=True,
+        )
+
+        buffer = ""
+        async for chunk in stream:
+            delta = chunk.choices[0].delta
+            if delta and delta.content:
+                buffer += delta.content
+
+                # Try to extract a complete sentence
+                sentence, buffer = _extract_sentence(buffer)
+                if sentence:
+                    yield sentence
+
+        # Flush whatever remains
+        if buffer.strip():
+            yield buffer.strip()
+
+    except Exception as e:
+        logger.error("OpenAI streaming API error: %s", e)
+        yield "I'm sorry, I'm having trouble processing that. Could you repeat?"
+

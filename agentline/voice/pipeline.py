@@ -31,7 +31,7 @@ from deepgram import LiveTranscriptionEvents
 from agentline.config import settings
 from agentline.database import get_db_conn
 from agentline.voice.stt import create_deepgram_connection, get_stt_options
-from agentline.voice.llm import llm_response
+from agentline.voice.llm import llm_response, llm_response_stream
 from agentline.voice.tts import tts_cartesia
 from agentline.voice.voices import resolve_voice_id, DEFAULT_VOICE_ID
 
@@ -132,9 +132,14 @@ async def run_pipeline(
     dg_connection = create_deepgram_connection()
     utterance_buffer: list[str] = []
 
-    # ── Shared helper: generate LLM reply → TTS → send audio ──────
+    # ── Shared helper: stream LLM → TTS → send audio per sentence ──
     async def _respond(utterance: str):
-        """Run the LLM + TTS cycle for a completed user utterance."""
+        """Stream the LLM response sentence-by-sentence.
+
+        Each sentence is TTS'd and sent to the caller immediately, so the
+        user hears the first sentence within ~0.5-1s instead of waiting
+        for the entire reply + TTS to complete.
+        """
         nonlocal pending_response_task
 
         logger.info("Call %s — Human: %s", call_id, utterance)
@@ -145,7 +150,7 @@ async def run_pipeline(
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
 
-        # Save transcript incrementally
+        # Save human turn incrementally
         try:
             async with get_db_conn() as db:
                 await db.execute(
@@ -155,20 +160,33 @@ async def run_pipeline(
         except Exception as e:
             logger.warning("Failed to save transcript for call %s: %s", call_id, e)
 
-        # Get LLM response
+        # Stream LLM → TTS → caller, sentence by sentence
         conversation_history.append({"role": "user", "content": utterance})
-        reply = await llm_response(system_prompt, conversation_history, model_tier)
-        conversation_history.append({"role": "assistant", "content": reply})
+        reply_parts: list[str] = []
 
-        logger.info("Call %s — Agent: %s", call_id, reply)
+        async for sentence in llm_response_stream(system_prompt, conversation_history, model_tier):
+            reply_parts.append(sentence)
+            logger.debug("Call %s — streaming sentence: %s", call_id, sentence[:80])
+
+            # TTS this sentence and send audio immediately
+            try:
+                audio = await tts_cartesia(sentence, voice_id)
+                await send_audio(provider_ws, audio, stream_sid)
+            except Exception as e:
+                logger.error("TTS/send failed for call %s: %s", call_id, e)
+
+        full_reply = " ".join(reply_parts)
+        conversation_history.append({"role": "assistant", "content": full_reply})
+
+        logger.info("Call %s — Agent: %s", call_id, full_reply)
 
         transcript_turns.append({
             "role": "agent",
-            "text": reply,
+            "text": full_reply,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
 
-        # Save transcript with agent reply
+        # Save agent reply
         try:
             async with get_db_conn() as db:
                 await db.execute(
@@ -177,13 +195,6 @@ async def run_pipeline(
                 )
         except Exception as e:
             logger.warning("Failed to save transcript for call %s: %s", call_id, e)
-
-        # TTS and send audio back
-        try:
-            audio = await tts_cartesia(reply, voice_id)
-            await send_audio(provider_ws, audio, stream_sid)
-        except Exception as e:
-            logger.error("TTS/send failed for call %s: %s", call_id, e)
 
         pending_response_task = None
 
