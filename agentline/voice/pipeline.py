@@ -37,6 +37,29 @@ from agentline.voice.voices import resolve_voice_id, DEFAULT_VOICE_ID
 
 logger = logging.getLogger(__name__)
 
+# ── Turn-taking tuning ────────────────────────────────────────────
+# How long to wait (seconds) after Deepgram signals speech_final before
+# actually triggering the LLM.  If the user resumes speaking within this
+# window the timer is cancelled and the new words are appended.
+DEBOUNCE_SECONDS = 0.7
+
+# Common filler words/sounds.  If an entire speech_final segment contains
+# ONLY these tokens we skip it and keep buffering — the user is thinking,
+# not finished.
+FILLER_WORDS = {
+    "uh", "um", "umm", "uhh", "uh-huh", "uh huh",
+    "hmm", "hm", "hmmm",
+    "oh", "ohh", "ah", "ahh", "er", "eh",
+    "like", "so", "well", "okay", "ok",
+    "you know", "i mean", "let me think",
+}
+
+
+def _is_only_filler(text: str) -> bool:
+    """Return True if *text* consists entirely of filler words/sounds."""
+    words = text.lower().strip().split()
+    return len(words) > 0 and all(w in FILLER_WORDS for w in words)
+
 
 # ── Provider-specific audio send helpers ──────────────────────────
 
@@ -103,19 +126,89 @@ async def run_pipeline(
     transcript_turns: list[dict] = []
     stream_sid = ""  # Set when we receive the 'start' event with metadata
     greeting_sent = False
+    pending_response_task: asyncio.Task | None = None  # debounce handle
 
     # Set up Deepgram streaming STT
     dg_connection = create_deepgram_connection()
     utterance_buffer: list[str] = []
 
+    # ── Shared helper: generate LLM reply → TTS → send audio ──────
+    async def _respond(utterance: str):
+        """Run the LLM + TTS cycle for a completed user utterance."""
+        nonlocal pending_response_task
+
+        logger.info("Call %s — Human: %s", call_id, utterance)
+
+        transcript_turns.append({
+            "role": "human",
+            "text": utterance,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+
+        # Save transcript incrementally
+        try:
+            async with get_db_conn() as db:
+                await db.execute(
+                    "UPDATE calls SET transcript=$1 WHERE id=$2",
+                    json.dumps(transcript_turns), call_id,
+                )
+        except Exception as e:
+            logger.warning("Failed to save transcript for call %s: %s", call_id, e)
+
+        # Get LLM response
+        conversation_history.append({"role": "user", "content": utterance})
+        reply = await llm_response(system_prompt, conversation_history, model_tier)
+        conversation_history.append({"role": "assistant", "content": reply})
+
+        logger.info("Call %s — Agent: %s", call_id, reply)
+
+        transcript_turns.append({
+            "role": "agent",
+            "text": reply,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+
+        # Save transcript with agent reply
+        try:
+            async with get_db_conn() as db:
+                await db.execute(
+                    "UPDATE calls SET transcript=$1 WHERE id=$2",
+                    json.dumps(transcript_turns), call_id,
+                )
+        except Exception as e:
+            logger.warning("Failed to save transcript for call %s: %s", call_id, e)
+
+        # TTS and send audio back
+        try:
+            audio = await tts_cartesia(reply, voice_id)
+            await send_audio(provider_ws, audio, stream_sid)
+        except Exception as e:
+            logger.error("TTS/send failed for call %s: %s", call_id, e)
+
+        pending_response_task = None
+
+    async def _schedule_response(utterance: str):
+        """Wait DEBOUNCE_SECONDS of silence, then respond.  Cancelled if user resumes."""
+        try:
+            await asyncio.sleep(DEBOUNCE_SECONDS)
+            await _respond(utterance)
+        except asyncio.CancelledError:
+            logger.debug("Call %s — debounce cancelled (user resumed speaking)", call_id)
+
     # This event fires for each transcript segment
     async def on_transcript(self, result, **kwargs):
+        nonlocal pending_response_task
+
         # We only care about finalized transcript segments
         if not result.is_final:
             return
 
         sentence = result.channel.alternatives[0].transcript
         if sentence:
+            # New speech arrived — cancel any pending response (user is still talking)
+            if pending_response_task and not pending_response_task.done():
+                pending_response_task.cancel()
+                pending_response_task = None
             utterance_buffer.append(sentence)
 
         if result.speech_final:
@@ -125,53 +218,18 @@ async def run_pipeline(
             if not full_utterance:
                 return
 
-            logger.info("Call %s — Human: %s", call_id, full_utterance)
+            # Skip filler-only utterances — keep waiting for real content
+            if _is_only_filler(full_utterance):
+                logger.info("Call %s — skipping filler-only segment: '%s'", call_id, full_utterance)
+                utterance_buffer.append(full_utterance)  # re-buffer so it joins the next real sentence
+                return
 
-            transcript_turns.append({
-                "role": "human",
-                "text": full_utterance,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
-
-            # Save transcript incrementally
-            try:
-                async with get_db_conn() as db:
-                    await db.execute(
-                        "UPDATE calls SET transcript=$1 WHERE id=$2",
-                        json.dumps(transcript_turns), call_id,
-                    )
-            except Exception as e:
-                logger.warning("Failed to save transcript for call %s: %s", call_id, e)
-
-            # Get LLM response
-            conversation_history.append({"role": "user", "content": full_utterance})
-            reply = await llm_response(system_prompt, conversation_history, model_tier)
-            conversation_history.append({"role": "assistant", "content": reply})
-
-            logger.info("Call %s — Agent: %s", call_id, reply)
-
-            transcript_turns.append({
-                "role": "agent",
-                "text": reply,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
-
-            # Save transcript with agent reply
-            try:
-                async with get_db_conn() as db:
-                    await db.execute(
-                        "UPDATE calls SET transcript=$1 WHERE id=$2",
-                        json.dumps(transcript_turns), call_id,
-                    )
-            except Exception as e:
-                logger.warning("Failed to save transcript for call %s: %s", call_id, e)
-
-            # TTS and send audio back
-            try:
-                audio = await tts_cartesia(reply, voice_id)
-                await send_audio(provider_ws, audio, stream_sid)
-            except Exception as e:
-                logger.error("TTS/send failed for call %s: %s", call_id, e)
+            # Schedule a debounced response instead of responding immediately
+            if pending_response_task and not pending_response_task.done():
+                pending_response_task.cancel()
+            pending_response_task = asyncio.create_task(
+                _schedule_response(full_utterance)
+            )
 
     # ── Deepgram lifecycle event handlers ──
     dg_ready = asyncio.Event()
@@ -187,55 +245,23 @@ async def run_pipeline(
         logger.info("Call %s — Deepgram WebSocket CLOSED", call_id)
 
     async def on_utterance_end(self, utterance_end, **kwargs):
+        nonlocal pending_response_task
         logger.info("Call %s — Deepgram UtteranceEnd event (buffer: %s)", call_id, utterance_buffer)
         # Fallback: if we have buffered text but speech_final never fired, flush now
         if utterance_buffer:
             full_utterance = " ".join(utterance_buffer).strip()
             utterance_buffer.clear()
-            if full_utterance:
+            if full_utterance and not _is_only_filler(full_utterance):
                 logger.info("Call %s — Human (via UtteranceEnd): %s", call_id, full_utterance)
 
-                transcript_turns.append({
-                    "role": "human",
-                    "text": full_utterance,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                })
-
-                try:
-                    async with get_db_conn() as db:
-                        await db.execute(
-                            "UPDATE calls SET transcript=$1 WHERE id=$2",
-                            json.dumps(transcript_turns), call_id,
-                        )
-                except Exception as e:
-                    logger.warning("Failed to save transcript for call %s: %s", call_id, e)
-
-                conversation_history.append({"role": "user", "content": full_utterance})
-                reply = await llm_response(system_prompt, conversation_history, model_tier)
-                conversation_history.append({"role": "assistant", "content": reply})
-
-                logger.info("Call %s — Agent: %s", call_id, reply)
-
-                transcript_turns.append({
-                    "role": "agent",
-                    "text": reply,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                })
-
-                try:
-                    async with get_db_conn() as db:
-                        await db.execute(
-                            "UPDATE calls SET transcript=$1 WHERE id=$2",
-                            json.dumps(transcript_turns), call_id,
-                        )
-                except Exception as e:
-                    logger.warning("Failed to save transcript for call %s: %s", call_id, e)
-
-                try:
-                    audio = await tts_cartesia(reply, voice_id)
-                    await send_audio(provider_ws, audio, stream_sid)
-                except Exception as e:
-                    logger.error("TTS/send failed for call %s: %s", call_id, e)
+                # Schedule debounced response (same as on_transcript path)
+                if pending_response_task and not pending_response_task.done():
+                    pending_response_task.cancel()
+                pending_response_task = asyncio.create_task(
+                    _schedule_response(full_utterance)
+                )
+            elif full_utterance:
+                logger.info("Call %s — skipping filler-only UtteranceEnd: '%s'", call_id, full_utterance)
 
     dg_connection.on(LiveTranscriptionEvents.Open, on_dg_open)
     dg_connection.on(LiveTranscriptionEvents.Error, on_dg_error)
