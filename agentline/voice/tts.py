@@ -36,7 +36,6 @@ def _get_client() -> httpx.AsyncClient:
     if _http_client is None or _http_client.is_closed:
         _http_client = httpx.AsyncClient(
             timeout=30.0,
-            http2=True,  # HTTP/2 multiplexing — faster for sequential requests
         )
     return _http_client
 
