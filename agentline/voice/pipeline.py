@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 # How long to wait (seconds) after Deepgram signals speech_final before
 # actually triggering the LLM.  If the user resumes speaking within this
 # window the timer is cancelled and the new words are appended.
-DEBOUNCE_SECONDS = 0.7
+DEBOUNCE_SECONDS = 0.9
 
 # Common filler words/sounds.  If an entire speech_final segment contains
 # ONLY these tokens we skip it and keep buffering — the user is thinking,
