@@ -105,6 +105,7 @@ async def run_pipeline(
     voice_id: str,
     model_tier: str,
     provider: str = "signalwire",
+    voice_mode: str = "hosted",
 ):
     """
     Main voice pipeline coroutine. One instance per active call.
@@ -118,9 +119,22 @@ async def run_pipeline(
         voice_id: Cartesia voice ID (UUID or preset name — resolved before use)
         model_tier: LLM model tier (turbo/balanced/max)
         provider: 'signalwire' or 'plivo'
+        voice_mode: 'hosted' or 'webhook'
     """
     voice_id = resolve_voice_id(voice_id)
     send_audio = PROVIDER_SEND.get(provider, _send_audio_signalwire)
+
+    # Fetch call metadata (account_id and agent_id) for webhooks
+    account_id = None
+    agent_id = None
+    try:
+        async with get_db_conn() as db:
+            row = await db.fetchrow("SELECT account_id, agent_id FROM calls WHERE id = $1", call_id)
+            if row:
+                account_id = row["account_id"]
+                agent_id = row["agent_id"]
+    except Exception as e:
+        logger.warning("Failed to load call metadata in pipeline for call %s: %s", call_id, e)
 
     conversation_history: list[dict] = []
     transcript_turns: list[dict] = []
@@ -162,39 +176,104 @@ async def run_pipeline(
 
         # Stream LLM → TTS → caller, sentence by sentence
         conversation_history.append({"role": "user", "content": utterance})
-        reply_parts: list[str] = []
 
-        async for sentence in llm_response_stream(system_prompt, conversation_history, model_tier):
-            reply_parts.append(sentence)
-            logger.debug("Call %s — streaming sentence: %s", call_id, sentence[:80])
+        if voice_mode == "webhook":
+            # 1. Dispatch webhook event call.speech (Webhook Mode)
+            speak_text = None
+            payload = {
+                "event": "call.speech",
+                "call_id": call_id,
+                "agent_id": agent_id,
+                "text": utterance,
+                "transcript": transcript_turns,
+            }
+            if account_id:
+                from agentline.webhook_dispatcher import get_webhook_speak_response
+                speak_text = await get_webhook_speak_response(account_id, agent_id, payload)
 
-            # TTS this sentence and send audio immediately
+            # 2. If webhook did not return a response, poll the call_responses table (Relay/Poll Mode)
+            if not speak_text:
+                logger.info("Call %s — waiting for external speak response in call_responses...", call_id)
+                for _ in range(80):  # Poll every 250ms for up to 20 seconds
+                    async with get_db_conn() as db:
+                        # Check call status
+                        call_status = await db.fetchval("SELECT status FROM calls WHERE id = $1", call_id)
+                        if call_status == "completed":
+                            logger.info("Call %s ended while waiting for speak response.", call_id)
+                            break
+
+                        row = await db.fetchrow(
+                            "SELECT id, response_text FROM call_responses WHERE call_id = $1 AND spoken = false ORDER BY id ASC LIMIT 1",
+                            call_id
+                        )
+                        if row:
+                            speak_text = row["response_text"]
+                            await db.execute("UPDATE call_responses SET spoken = true WHERE id = $1", row["id"])
+                            break
+                    await asyncio.sleep(0.25)
+
+            if not speak_text:
+                speak_text = "I'm sorry, I didn't receive a response. Could you please repeat?"
+
+            # Speak the response
             try:
-                audio = await tts_cartesia(sentence, voice_id)
+                audio = await tts_cartesia(speak_text, voice_id)
                 await send_audio(provider_ws, audio, stream_sid)
             except Exception as e:
-                logger.error("TTS/send failed for call %s: %s", call_id, e)
+                logger.error("TTS/send failed for webhook call %s: %s", call_id, e)
 
-        full_reply = " ".join(reply_parts)
-        conversation_history.append({"role": "assistant", "content": full_reply})
+            conversation_history.append({"role": "assistant", "content": speak_text})
+            logger.info("Call %s — Agent (Webhook/Relay): %s", call_id, speak_text)
+            transcript_turns.append({
+                "role": "agent",
+                "text": speak_text,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
 
-        logger.info("Call %s — Agent: %s", call_id, full_reply)
+            # Save agent reply
+            try:
+                async with get_db_conn() as db:
+                    await db.execute(
+                        "UPDATE calls SET transcript=$1 WHERE id=$2",
+                        json.dumps(transcript_turns), call_id,
+                    )
+            except Exception as e:
+                logger.warning("Failed to save transcript for call %s: %s", call_id, e)
 
-        transcript_turns.append({
-            "role": "agent",
-            "text": full_reply,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        })
+        else:
+            reply_parts: list[str] = []
 
-        # Save agent reply
-        try:
-            async with get_db_conn() as db:
-                await db.execute(
-                    "UPDATE calls SET transcript=$1 WHERE id=$2",
-                    json.dumps(transcript_turns), call_id,
-                )
-        except Exception as e:
-            logger.warning("Failed to save transcript for call %s: %s", call_id, e)
+            async for sentence in llm_response_stream(system_prompt, conversation_history, model_tier):
+                reply_parts.append(sentence)
+                logger.debug("Call %s — streaming sentence: %s", call_id, sentence[:80])
+
+                # TTS this sentence and send audio immediately
+                try:
+                    audio = await tts_cartesia(sentence, voice_id)
+                    await send_audio(provider_ws, audio, stream_sid)
+                except Exception as e:
+                    logger.error("TTS/send failed for call %s: %s", call_id, e)
+
+            full_reply = " ".join(reply_parts)
+            conversation_history.append({"role": "assistant", "content": full_reply})
+
+            logger.info("Call %s — Agent: %s", call_id, full_reply)
+
+            transcript_turns.append({
+                "role": "agent",
+                "text": full_reply,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+
+            # Save agent reply
+            try:
+                async with get_db_conn() as db:
+                    await db.execute(
+                        "UPDATE calls SET transcript=$1 WHERE id=$2",
+                        json.dumps(transcript_turns), call_id,
+                    )
+            except Exception as e:
+                logger.warning("Failed to save transcript for call %s: %s", call_id, e)
 
         pending_response_task = None
 

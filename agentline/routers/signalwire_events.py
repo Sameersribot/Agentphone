@@ -107,6 +107,7 @@ async def signalwire_stream(websocket: WebSocket, call_id: str):
     initial_greeting = "Hello, how can I help you today?"
     voice_id = DEFAULT_VOICE_ID
     model_tier = "balanced"
+    voice_mode = "hosted"
 
     try:
         async with get_db_conn() as db:
@@ -123,6 +124,7 @@ async def signalwire_stream(websocket: WebSocket, call_id: str):
                     system_prompt = agent.get("system_prompt") or system_prompt
                     initial_greeting = agent.get("initial_greeting") or initial_greeting
                     model_tier = agent.get("model_tier") or "balanced"
+                    voice_mode = agent.get("voice_mode") or "hosted"
 
                 # Voice resolution chain: per-call → agent → account → default
                 voice_id = resolve_voice_chain(
@@ -146,6 +148,7 @@ async def signalwire_stream(websocket: WebSocket, call_id: str):
             voice_id=voice_id,
             model_tier=model_tier,
             provider="signalwire",
+            voice_mode=voice_mode,
         )
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected for call %s", call_id)
@@ -391,6 +394,16 @@ async def signalwire_hangup(request: Request, call_id: str):
             except Exception as e:
                 logger.error("Failed to push event for call %s: %s", call_id, e)
 
+            # ── Dispatch call.completed to customer webhook ──
+            try:
+                from agentline.webhook_dispatcher import dispatch_webhook
+                await dispatch_webhook(call.get("account_id"), call.get("agent_id"), {
+                    "event": event_type,
+                    **event_payload,
+                })
+            except Exception as e:
+                logger.warning("Webhook dispatch failed for call %s: %s", call_id, e)
+
     return _xml("<Response/>")
 
 
@@ -448,6 +461,44 @@ async def signalwire_inbound_call(request: Request):
             call_sid, from_number, to_number,
             agent["system_prompt"] if agent else "",
         )
+
+        # ── Push call.received event to event mailbox ──
+        call_received_payload = {
+            "call_id": call_id,
+            "agent_id": number["agent_id"],
+            "number": to_number,
+            "from": from_number,
+            "direction": "inbound",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+        event_id = f"evt_{secrets.token_urlsafe(12)}"
+        try:
+            await db.execute(
+                """INSERT INTO event_mailbox
+                   (event_id, account_id, agent_id, event_type, payload)
+                   VALUES ($1, $2, $3, 'call.received', $4)""",
+                event_id,
+                number["account_id"],
+                number["agent_id"],
+                json.dumps(call_received_payload),
+            )
+            logger.info(
+                "Inbound call %s — pushed call.received event (from %s)",
+                call_id, from_number,
+            )
+        except Exception as e:
+            logger.error("Failed to push call.received event for %s: %s", call_id, e)
+
+    # ── Dispatch call.received to customer webhook (fire-and-forget) ──
+    try:
+        from agentline.webhook_dispatcher import dispatch_webhook
+        await dispatch_webhook(number["account_id"], number["agent_id"], {
+            "event": "call.received",
+            **call_received_payload,
+        })
+    except Exception as e:
+        logger.warning("Webhook dispatch failed for inbound call %s: %s", call_id, e)
 
     # Set StatusCallback on the live call so we get billed when it ends
     if call_sid:
@@ -556,5 +607,21 @@ async def signalwire_inbound_hangup(request: Request):
                 )
             except Exception as e:
                 logger.error("Failed to push event for inbound call %s: %s", call_id, e)
+
+            # ── Dispatch to customer webhook ──
+            try:
+                from agentline.webhook_dispatcher import dispatch_webhook
+                await dispatch_webhook(call.get("account_id"), call.get("agent_id"), {
+                    "event": event_type,
+                    "call_id": call_id,
+                    "status": call_status,
+                    "direction": "inbound",
+                    "from_number": call.get("from_number", ""),
+                    "to_number": call.get("to_number", ""),
+                    "duration_seconds": duration_secs,
+                    "transcript": transcript,
+                })
+            except Exception as e:
+                logger.warning("Webhook dispatch failed for inbound call %s: %s", call_id, e)
 
     return _xml("<Response/>")

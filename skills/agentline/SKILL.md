@@ -112,13 +112,63 @@ curl $AGENTLINE_URL/v1/calls/<call_id>/transcript \
 
 Returns the full conversation transcript as an array of `{role, text, timestamp}` entries.
 
+## Webhooks (Optional — Only If the Human Provides a URL)
+
+You do NOT need to figure out whether you are locally deployed or on a server. **Always use polling by default** (see Events Mailbox below). Only use this section if the human explicitly gives you a public webhook URL and asks you to register it.
+
+### Register a webhook
+```bash
+curl -X POST $AGENTLINE_URL/v1/webhooks \
+  -H "Authorization: Bearer $AGENTLINE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://your-server.com/webhooks/agentline",
+    "agent_id": "$AGENTLINE_AGENT_ID"
+  }'
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `url` | Yes | Your public HTTPS endpoint that will receive POST requests |
+| `agent_id` | No | Scope webhook to one agent. Omit for all agents on the account. |
+
+The response includes a `secret` — **save it** to verify incoming webhook signatures.
+
+### Webhook payload format
+AgentLine POSTs JSON with these headers:
+- `Content-Type: application/json`
+- `X-AgentLine-Signature: <HMAC-SHA256 hex digest>` — verify this using your `secret`
+- `X-AgentLine-Event: <event type>` — e.g., `call.received`, `sms.received`, `call.completed`
+
+### Verify webhook signatures
+```python
+import hmac, hashlib
+
+def verify(body: bytes, secret: str, signature: str) -> bool:
+    expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature)
+```
+
+### List webhooks
+```bash
+curl $AGENTLINE_URL/v1/webhooks \
+  -H "Authorization: Bearer $AGENTLINE_API_KEY"
+```
+
+### Delete a webhook
+```bash
+curl -X DELETE $AGENTLINE_URL/v1/webhooks/<webhook_id> \
+  -H "Authorization: Bearer $AGENTLINE_API_KEY"
+```
+
 ---
 
-## Events Mailbox (Inbound Notifications)
+## Events Mailbox (Inbound Notifications — All Agents)
 
-The Events Mailbox captures events for both **inbound calls** and **inbound SMS messages**. When someone calls or texts your agent's number, events are pushed here automatically.
+The Events Mailbox captures events for both **inbound calls** and **inbound SMS messages**. When someone calls or texts your agent's number, events are pushed here automatically. This works everywhere — locally or on a server.
 
 **Event types:**
+- `call.received` — An inbound call just arrived on your agent's number
 - `call.completed` — A call ended (inbound or outbound), includes full transcript
 - `sms.received` — An inbound SMS was received on your agent's number
 
@@ -129,6 +179,8 @@ curl "$AGENTLINE_URL/v1/events" \
 ```
 
 Returns events oldest-first. **Events are auto-deleted after retrieval** (consume-once), so each event is only delivered once.
+
+**⚠️ IMPORTANT — Poll proactively:** If you are waiting for something or idle, poll `GET /v1/events` every **30 seconds** to catch inbound calls and SMS as quickly as possible. Do not wait for the human to ask — check proactively.
 
 ### Example: call.completed event
 ```json
@@ -439,5 +491,7 @@ Returns whether the call was charged, the expected vs actual cost, and the balan
 11. **Always ask the human to choose a voice during first-time setup** — ask "Would you like a male or female voice?" and set it via `PATCH /v1/agents/{id}` with the chosen preset (`female-1`, `female-2`, or `male-1`). If the human later asks to change the voice, update it immediately.
 12. **If the human asks to change the voice mid-conversation**, update the agent or account voice right away — the new voice will be used on the next call.
 13. **ALWAYS retrieve transcripts after outbound calls** — After initiating a call, poll `GET /v1/calls/<call_id>` until `status` is `completed`, then fetch the transcript with `GET /v1/calls/<call_id>/transcript`. Summarize the conversation for the human. Never consider a call "done" without sharing the transcript.
-14. **ALWAYS check for inbound events (calls AND SMS)** — After making a call or when the human asks about missed calls, texts, or inbound activity, poll `GET /v1/events` to check for `call.completed` and `sms.received` events. Summarize any inbound transcripts and text messages for the human.
+14. **ALWAYS check for inbound events (calls AND SMS)** — After making a call or when the human asks about missed calls, texts, or inbound activity, poll `GET /v1/events` to check for `call.received`, `call.completed`, and `sms.received` events. Summarize any inbound transcripts and text messages for the human.
 15. **Proactively check events at the start of each conversation** — When the human starts a new session or asks what happened, always call `GET /v1/events` first to see if any inbound calls or SMS came in since the last check. Report any missed calls (with transcripts) and any text messages received.
+16. **Poll every 30 seconds when idle** — If you are waiting for a call to complete, or have no pending task, poll `GET /v1/events` every ~30 seconds so you catch inbound calls and SMS promptly. Don't wait for the human to ask.
+17. **Never guess your deployment environment** — You cannot detect whether you are local or on a server. Always use polling by default. Only register a webhook via `POST /v1/webhooks` if the human explicitly provides a public URL and asks you to set one up. Never ask the human whether you are locally deployed or not.
