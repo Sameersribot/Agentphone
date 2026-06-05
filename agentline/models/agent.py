@@ -15,7 +15,6 @@ class AgentCreate(BaseModel):
     model_tier: Literal["turbo", "balanced", "max"] = "balanced"
     transfer_number: str | None = None
     voicemail_message: str | None = None
-    knowledge_base: str | None = None  # Dynamic context the agent injects — appended to system_prompt at call time
 
 
 class AgentUpdate(BaseModel):
@@ -26,7 +25,6 @@ class AgentUpdate(BaseModel):
     model_tier: Literal["turbo", "balanced", "max"] | None = None
     transfer_number: str | None = None
     voicemail_message: str | None = None
-    knowledge_base: str | None = None
 
 
 class AgentOut(BaseModel):
@@ -39,5 +37,4 @@ class AgentOut(BaseModel):
     model_tier: str
     transfer_number: str | None = None
     voicemail_message: str | None = None
-    knowledge_base: str | None = None
     created_at: datetime

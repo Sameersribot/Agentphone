@@ -74,13 +74,6 @@ async def init_db():
             """)
             logger.info("billing tables verified")
 
-            # Auto-add knowledge_base column to agents (dynamic context injection)
-            await conn.execute("""
-                ALTER TABLE agents
-                    ADD COLUMN IF NOT EXISTS knowledge_base TEXT
-            """)
-            logger.info("agents.knowledge_base column verified")
-
             # Auto-add initial_greeting column to calls (per-call greeting override)
             await conn.execute("""
                 ALTER TABLE calls
