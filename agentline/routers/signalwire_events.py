@@ -125,14 +125,6 @@ async def signalwire_stream(websocket: WebSocket, call_id: str):
                     initial_greeting = agent.get("initial_greeting") or initial_greeting
                     model_tier = agent.get("model_tier") or "balanced"
 
-                    # Inject knowledge_base context into system prompt
-                    knowledge_base = agent.get("knowledge_base")
-                    if knowledge_base:
-                        system_prompt = (
-                            f"{system_prompt}\n\n"
-                            f"--- KNOWLEDGE BASE (current context) ---\n"
-                            f"{knowledge_base}"
-                        )
 
                 # Voice resolution chain: per-call → agent → account → default
                 voice_id = resolve_voice_chain(
