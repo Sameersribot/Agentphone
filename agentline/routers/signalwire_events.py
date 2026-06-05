@@ -144,6 +144,10 @@ async def signalwire_stream(websocket: WebSocket, call_id: str):
                 if call.get("system_prompt"):
                     # Per-call system prompt override
                     system_prompt = call["system_prompt"]
+
+                if call.get("initial_greeting"):
+                    # Per-call greeting override (outbound calls)
+                    initial_greeting = call["initial_greeting"]
     except Exception as e:
         logger.warning("Failed to load agent context for call %s: %s", call_id, e)
 

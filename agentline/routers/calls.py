@@ -76,14 +76,16 @@ async def create_call(
 
     call_id = f"call_{secrets.token_urlsafe(12)}"
     system_prompt = body.system_prompt or agent["system_prompt"]
+    initial_greeting = body.initial_greeting  # Per-call override (None = use agent default)
     now = datetime.now(timezone.utc)
 
     await db.execute(
         """INSERT INTO calls (id, account_id, agent_id, number_id, direction,
-           from_number, to_number, system_prompt, voice_id, status, started_at)
-           VALUES ($1,$2,$3,$4,'outbound',$5,$6,$7,$8,'initiated',$9)""",
+           from_number, to_number, system_prompt, initial_greeting, voice_id, status, started_at)
+           VALUES ($1,$2,$3,$4,'outbound',$5,$6,$7,$8,$9,'initiated',$10)""",
         call_id, account["id"], body.agent_id, number["id"],
         number["phone_number"], body.to_number, system_prompt,
+        initial_greeting,
         body.voice_id,  # Per-call voice override (None = use agent/account default)
         now,
     )

@@ -135,13 +135,26 @@ Returns the full conversation transcript as an array of `{role, text, timestamp}
 
 ---
 
-## Events Mailbox (Inbound Notifications)
+## Events Mailbox (Stay Aware of Calls & SMS)
 
-The Events Mailbox captures events for both **inbound calls** and **inbound SMS messages**. When someone calls or texts your agent's number, events are pushed here automatically.
+The Events Mailbox is how you stay aware of everything happening on your phone number. When someone calls or texts your agent's number, events are pushed here automatically. **You MUST poll this endpoint regularly to stay informed.**
 
 **Event types:**
-- `call.completed` — A call ended (inbound or outbound), includes full transcript
+- `call.received` — An inbound call just started (tells you who's calling right now)
+- `call.completed` — A call ended (inbound or outbound), includes full transcript with everything the caller said
 - `sms.received` — An inbound SMS was received on your agent's number
+
+### ⚡ CRITICAL — Proactive Polling Behavior
+
+**You MUST poll `GET /v1/events` regularly** to stay aware of inbound calls and SMS. This is how you learn about:
+- Callers who asked you to do something (deploy, schedule, cancel, etc.)
+- SMS messages that need a response
+- Call transcripts that contain actionable requests
+
+**Recommended polling pattern:**
+1. Poll every 30-60 seconds when you're idle
+2. After receiving events, process them and take any requested actions
+3. Update your `knowledge_base` with any new context from the calls
 
 ### Poll for new events
 ```bash
@@ -151,12 +164,31 @@ curl "$AGENTLINE_URL/v1/events" \
 
 Returns events oldest-first. **Events are auto-deleted after retrieval** (consume-once), so each event is only delivered once.
 
-### Example: call.completed event
+### Example: call.received event (real-time notification)
 ```json
 {
   "events": [
     {
       "event_id": "evt_abc123",
+      "agent_id": "agt_xyz",
+      "event_type": "call.received",
+      "payload": {
+        "call_id": "call_abc",
+        "from": "+12125551234",
+        "direction": "inbound",
+        "timestamp": "2026-06-05T12:00:00Z"
+      }
+    }
+  ]
+}
+```
+
+### Example: call.completed event (with transcript)
+```json
+{
+  "events": [
+    {
+      "event_id": "evt_def456",
       "agent_id": "agt_xyz",
       "event_type": "call.completed",
       "payload": {
@@ -168,7 +200,8 @@ Returns events oldest-first. **Events are auto-deleted after retrieval** (consum
         "duration_seconds": 45,
         "transcript": [
           {"role": "agent", "text": "Hello, how can I help?", "timestamp": "..."},
-          {"role": "human", "text": "I'd like to schedule a meeting.", "timestamp": "..."}
+          {"role": "human", "text": "Please deploy the new version.", "timestamp": "..."},
+          {"role": "agent", "text": "Got it, I'll pass that along.", "timestamp": "..."}
         ]
       }
     }
@@ -182,7 +215,7 @@ Returns events oldest-first. **Events are auto-deleted after retrieval** (consum
 {
   "events": [
     {
-      "event_id": "evt_def456",
+      "event_id": "evt_ghi789",
       "agent_id": "agt_xyz",
       "event_type": "sms.received",
       "payload": {
@@ -190,7 +223,7 @@ Returns events oldest-first. **Events are auto-deleted after retrieval** (consum
         "conversation_id": "conv_xyz",
         "from_number": "+12125551234",
         "to_number": "+14155559876",
-        "body": "Hi, I'd like to schedule a meeting tomorrow.",
+        "body": "Hi, can I reschedule my appointment?",
         "media_url": null
       }
     }

@@ -80,6 +80,13 @@ async def init_db():
                     ADD COLUMN IF NOT EXISTS knowledge_base TEXT
             """)
             logger.info("agents.knowledge_base column verified")
+
+            # Auto-add initial_greeting column to calls (per-call greeting override)
+            await conn.execute("""
+                ALTER TABLE calls
+                    ADD COLUMN IF NOT EXISTS initial_greeting TEXT
+            """)
+            logger.info("calls.initial_greeting column verified")
     except Exception as e:
         logger.error("Database connection failed: %s", e)
         logger.warning("Server starting WITHOUT database — fix DATABASE_URL in .env")
