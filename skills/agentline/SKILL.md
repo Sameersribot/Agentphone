@@ -1,6 +1,6 @@
 ---
 name: agentline
-description: Make phone calls, provision numbers, manage agents, and track billing through the AgentLine telephony API. Use when the user asks to call someone, check transcripts, manage phone agents, buy numbers, or check account balance. SMS sending is NOT supported — you can only view inbound SMS.
+description: Make phone calls, send SMS, provision numbers, manage agents, and track billing through the AgentLine telephony API. Use when the user asks to call someone, send a text, check transcripts, manage phone agents, buy numbers, or check account balance. Supports a knowledge_base field for injecting dynamic context into the hosted voice AI.
 metadata:
   openclaw:
     emoji: "📞"
@@ -42,7 +42,7 @@ Authorization: Bearer $AGENTLINE_API_KEY
 Content-Type: application/json
 ```
 
-Base URL: `https://agentphone-production.up.railway.app`
+Base URL: `https://api.agentline.cloud`
 
 ---
 
@@ -55,6 +55,27 @@ AgentLine runs in **Hosted Mode** — the server runs the AI voice conversation 
 1. **Dynamic prompt** — set per outbound call using the `system_prompt` field in `POST /v1/calls`. This overrides the default for that specific call only.
 
 2. **Default prompt** — stored on the agent via `PATCH /v1/agents/{agent_id}`. This is the permanent prompt used for **all inbound calls** and any outbound call where no dynamic prompt is provided.
+
+### Knowledge Base — Dynamic Context Injection
+
+The `knowledge_base` field on the agent lets you inject **dynamic context** that the hosted LLM uses during calls. It is appended to the system prompt at call time.
+
+**Use this to give the hosted LLM your agent's knowledge:** recent activities, decisions, FAQs, preferences, current state, and anything callers might ask about.
+
+```bash
+# Update knowledge_base with current context
+curl -X PATCH $AGENTLINE_URL/v1/agents/$AGENTLINE_AGENT_ID \
+  -H "Authorization: Bearer $AGENTLINE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "knowledge_base": "Current projects:\n- Website redesign (due June 15)\n- API migration (in progress)\n\nRecent decisions:\n- Approved budget for new server\n- Meeting with client moved to Thursday\n\nFAQs:\n- Office hours: 9am-5pm EST\n- Preferred contact: email first, then call"
+  }'
+```
+
+**Best practice:** Update `knowledge_base` whenever your context changes — after meetings, deployments, decisions, etc. The hosted LLM will use this context for ALL subsequent calls automatically.
+
+**How it works at call time:**
+The system prompt the LLM receives = `system_prompt` + `\n\n--- KNOWLEDGE BASE ---\n` + `knowledge_base`
 
 ---
 

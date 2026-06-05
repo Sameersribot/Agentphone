@@ -12,6 +12,7 @@ Voice Architecture for US numbers:
   $0.20/2min. New architecture costs ~$0.075/2min (63% savings).
 """
 
+import asyncio
 import secrets
 import json
 import logging
@@ -123,6 +124,15 @@ async def signalwire_stream(websocket: WebSocket, call_id: str):
                     system_prompt = agent.get("system_prompt") or system_prompt
                     initial_greeting = agent.get("initial_greeting") or initial_greeting
                     model_tier = agent.get("model_tier") or "balanced"
+
+                    # Inject knowledge_base context into system prompt
+                    knowledge_base = agent.get("knowledge_base")
+                    if knowledge_base:
+                        system_prompt = (
+                            f"{system_prompt}\n\n"
+                            f"--- KNOWLEDGE BASE (current context) ---\n"
+                            f"{knowledge_base}"
+                        )
 
                 # Voice resolution chain: per-call → agent → account → default
                 voice_id = resolve_voice_chain(
@@ -449,22 +459,55 @@ async def signalwire_inbound_call(request: Request):
             agent["system_prompt"] if agent else "",
         )
 
-    # Set StatusCallback on the live call so we get billed when it ends
-    if call_sid:
+        # ── Push call.received event to event mailbox ──
+        # This is how the real agent (Claude/Hermes) learns about inbound calls
+        call_received_payload = {
+            "call_id": call_id,
+            "agent_id": number["agent_id"],
+            "number": to_number,
+            "from": from_number,
+            "direction": "inbound",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+        event_id = f"evt_{secrets.token_urlsafe(12)}"
         try:
-            hangup_url = f"{settings.base_url_clean}/signalwire/hangup/{call_id}"
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                await client.post(
-                    f"{_get_base_url()}/Calls/{call_sid}.json",
-                    auth=_get_auth(),
-                    data={
-                        "StatusCallback": hangup_url,
-                        "StatusCallbackMethod": "POST",
-                    },
-                )
-            logger.info("Inbound call %s — set StatusCallback to %s", call_id, hangup_url)
+            await db.execute(
+                """INSERT INTO event_mailbox
+                   (event_id, account_id, agent_id, event_type, payload)
+                   VALUES ($1, $2, $3, 'call.received', $4)""",
+                event_id,
+                number["account_id"],
+                number["agent_id"],
+                json.dumps(call_received_payload),
+            )
+            logger.info(
+                "Inbound call %s — pushed call.received event (from %s)",
+                call_id, from_number,
+            )
         except Exception as e:
-            logger.warning("Failed to set StatusCallback for inbound call %s: %s", call_id, e)
+            logger.error("Failed to push call.received event for %s: %s", call_id, e)
+
+    # Set StatusCallback on the live call so we get billed when it ends (fire-and-forget)
+    # MUST NOT block — SignalWire is waiting for our XML response.
+    if call_sid:
+        async def _set_status_callback():
+            try:
+                hangup_url = f"{settings.base_url_clean}/signalwire/hangup/{call_id}"
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    await client.post(
+                        f"{_get_base_url()}/Calls/{call_sid}.json",
+                        auth=_get_auth(),
+                        data={
+                            "StatusCallback": hangup_url,
+                            "StatusCallbackMethod": "POST",
+                        },
+                    )
+                logger.info("Inbound call %s — set StatusCallback to %s", call_id, hangup_url)
+            except Exception as e:
+                logger.warning("Failed to set StatusCallback for inbound call %s: %s", call_id, e)
+
+        asyncio.create_task(_set_status_callback())
 
     # Connect to our streaming pipeline via WebSocket (NOT <Gather>)
     xml = _stream_xml(call_id)

@@ -73,6 +73,13 @@ async def init_db():
                     ON billing_ledger(account_id, created_at DESC)
             """)
             logger.info("billing tables verified")
+
+            # Auto-add knowledge_base column to agents (dynamic context injection)
+            await conn.execute("""
+                ALTER TABLE agents
+                    ADD COLUMN IF NOT EXISTS knowledge_base TEXT
+            """)
+            logger.info("agents.knowledge_base column verified")
     except Exception as e:
         logger.error("Database connection failed: %s", e)
         logger.warning("Server starting WITHOUT database — fix DATABASE_URL in .env")
