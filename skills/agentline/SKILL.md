@@ -1,6 +1,6 @@
 ---
 name: agentline
-description: Make phone calls, view received SMS, provision numbers, manage agents, and track billing through the AgentLine telephony API. Use when the user asks to call someone, check transcripts, view text messages, manage phone agents, buy numbers, or check account balance. Supports a knowledge_base field for injecting dynamic context into the hosted voice AI.
+description: Make phone calls, view received SMS, provision numbers, manage agents, and track billing through the AgentLine telephony API. Use when the user asks to call someone, check transcripts, view text messages, manage phone agents, buy numbers, or check account balance.
 metadata:
   openclaw:
     emoji: "📞"
@@ -56,37 +56,22 @@ AgentLine runs in **Hosted Mode** — the server runs the AI voice conversation 
 
 2. **Default prompt** — stored on the agent via `PATCH /v1/agents/{agent_id}`. This is the permanent prompt used for **all inbound calls** and any outbound call where no dynamic prompt is provided.
 
-### Knowledge Base — Dynamic Context Injection
+### Keep Your Agent Updated — System Prompt = Everything
 
-The `knowledge_base` field on the agent lets you inject **dynamic context** that the hosted LLM uses during calls. It is appended to the system prompt at call time.
+The `system_prompt` is the **only thing** the hosted voice AI knows. It has no memory between calls. So you MUST put **everything** in there — personality, instructions, AND your current context.
 
-**Use this to give the hosted LLM your agent's knowledge:** recent activities, decisions, FAQs, preferences, current state, and anything callers might ask about.
+**Whenever your context changes** (after meetings, deployments, decisions, new information, etc.), update the agent's `system_prompt` with your full context:
 
 ```bash
-# Update knowledge_base with current context
 curl -X PATCH $AGENTLINE_URL/v1/agents/$AGENTLINE_AGENT_ID \
   -H "Authorization: Bearer $AGENTLINE_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "knowledge_base": "Current projects:\n- Website redesign (due June 15)\n- API migration (in progress)\n\nRecent decisions:\n- Approved budget for new server\n- Meeting with client moved to Thursday\n\nFAQs:\n- Office hours: 9am-5pm EST\n- Preferred contact: email first, then call"
+    "system_prompt": "You are Sam\'s AI assistant. Be professional and helpful.\n\nCurrent context:\n- Working on website redesign (due June 15)\n- API migration in progress\n- Meeting with client moved to Thursday\n- Office hours: 9am-5pm EST\n- Preferred contact: email first, then call"
   }'
 ```
 
-**Best practice:** Update `knowledge_base` whenever your context changes — after meetings, deployments, decisions, etc. The hosted LLM will use this context for ALL subsequent calls automatically.
-
-> ⚠️ **CRITICAL — `PATCH` REPLACES the entire `knowledge_base`, it does NOT append.**
-> If you PATCH with just new info, you will **destroy** all existing context.
-> **You MUST use a read-merge-write pattern:**
-> 1. `GET /v1/agents/{id}` → read the current `knowledge_base`
-> 2. Merge/append your new information into the existing text
-> 3. `PATCH /v1/agents/{id}` with the **combined** `knowledge_base`
->
-> **Never PATCH knowledge_base from a cron job or automated process** — only update it during active sessions when you can safely read-merge-write.
-
-⚠️ **CRITICAL:** Update `knowledge_base` immediately after any setup change — mode switch, cron creation, new integration, etc.
-
-**How it works at call time:**
-The system prompt the LLM receives = `system_prompt` + `\n\n--- KNOWLEDGE BASE ---\n` + `knowledge_base`
+> ⚠️ **CRITICAL: `system_prompt` is a FULL REPLACE, not an append.** Always include your complete instructions + all current context when updating. You already know your full context — just write it all in.
 
 ---
 
@@ -181,7 +166,6 @@ After receiving events:
 1. Process each event (read transcripts, handle SMS)
 2. Report events to the human (summarize transcripts, relay SMS messages)
 3. Take any requested actions from callers
-4. **Do NOT update `knowledge_base` from the cron** — only update it during active sessions using the read-merge-write pattern (see Knowledge Base section above)
 
 ### Poll for new events
 ```bash
@@ -340,14 +324,14 @@ curl "$AGENTLINE_URL/v1/messages?limit=20" \
 
 ## Set the Default System Prompt
 
-The default system prompt is used for **all inbound calls** and any outbound call where no dynamic prompt is given.
+The default system prompt is used for **all inbound calls** and any outbound call where no dynamic prompt is given. **Include ALL context the voice AI needs** — personality, instructions, current projects, preferences, FAQs, and anything callers might ask about.
 
 ```bash
 curl -X PATCH $AGENTLINE_URL/v1/agents/$AGENTLINE_AGENT_ID \
   -H "Authorization: Bearer $AGENTLINE_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "system_prompt": "You are a friendly customer support agent for Acme Corp. Help callers with orders, returns, and general questions. Keep responses brief and professional.",
+    "system_prompt": "You are a friendly customer support agent for Acme Corp. Help callers with orders, returns, and general questions. Keep responses brief and professional.\n\nCurrent context:\n- New product launch on June 20\n- Return policy: 30 days, no questions asked\n- Support hours: 9am-6pm EST",
     "initial_greeting": "Hello! Thanks for calling Acme Corp. How can I help you today?",
     "voice_id": "female-1"
   }'
@@ -355,7 +339,7 @@ curl -X PATCH $AGENTLINE_URL/v1/agents/$AGENTLINE_AGENT_ID \
 
 | Field | Description |
 |-------|-------------|
-| `system_prompt` | The permanent AI instructions for this agent |
+| `system_prompt` | **Everything** the voice AI needs to know — instructions + current context |
 | `initial_greeting` | What the agent says when answering inbound calls |
 | `name` | Display name for the agent |
 | `voice_id` | Voice preset: `"female-1"`, `"female-2"`, `"male-1"`, or a Cartesia UUID |
