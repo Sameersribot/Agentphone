@@ -1,6 +1,6 @@
 ---
 name: agentline
-description: Make phone calls, send SMS, provision numbers, manage agents, and track billing through the AgentLine telephony API. Use when the user asks to call someone, send a text, check transcripts, manage phone agents, buy numbers, or check account balance. Supports a knowledge_base field for injecting dynamic context into the hosted voice AI.
+description: Make phone calls, view received SMS, provision numbers, manage agents, and track billing through the AgentLine telephony API. Use when the user asks to call someone, check transcripts, view text messages, manage phone agents, buy numbers, or check account balance. Supports a knowledge_base field for injecting dynamic context into the hosted voice AI.
 metadata:
   openclaw:
     emoji: "📞"
