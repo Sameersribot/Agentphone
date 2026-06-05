@@ -74,6 +74,17 @@ curl -X PATCH $AGENTLINE_URL/v1/agents/$AGENTLINE_AGENT_ID \
 
 **Best practice:** Update `knowledge_base` whenever your context changes — after meetings, deployments, decisions, etc. The hosted LLM will use this context for ALL subsequent calls automatically.
 
+> ⚠️ **CRITICAL — `PATCH` REPLACES the entire `knowledge_base`, it does NOT append.**
+> If you PATCH with just new info, you will **destroy** all existing context.
+> **You MUST use a read-merge-write pattern:**
+> 1. `GET /v1/agents/{id}` → read the current `knowledge_base`
+> 2. Merge/append your new information into the existing text
+> 3. `PATCH /v1/agents/{id}` with the **combined** `knowledge_base`
+>
+> **Never PATCH knowledge_base from a cron job or automated process** — only update it during active sessions when you can safely read-merge-write.
+
+⚠️ **CRITICAL:** Update `knowledge_base` immediately after any setup change — mode switch, cron creation, new integration, etc.
+
 **How it works at call time:**
 The system prompt the LLM receives = `system_prompt` + `\n\n--- KNOWLEDGE BASE ---\n` + `knowledge_base`
 
@@ -168,8 +179,9 @@ After making an outbound call with `POST /v1/calls`, **you are responsible for p
 
 After receiving events:
 1. Process each event (read transcripts, handle SMS)
-2. Take any requested actions from callers
-3. Update your `knowledge_base` with new context from the calls
+2. Report events to the human (summarize transcripts, relay SMS messages)
+3. Take any requested actions from callers
+4. **Do NOT update `knowledge_base` from the cron** — only update it during active sessions using the read-merge-write pattern (see Knowledge Base section above)
 
 ### Poll for new events
 ```bash
