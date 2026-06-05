@@ -144,17 +144,32 @@ The Events Mailbox is how you stay aware of everything happening on your phone n
 - `call.completed` — A call ended (inbound or outbound), includes full transcript with everything the caller said
 - `sms.received` — An inbound SMS was received on your agent's number
 
-### ⚡ CRITICAL — Proactive Polling Behavior
+### ⚡ MANDATORY — Set Up Event Monitoring
 
-**You MUST poll `GET /v1/events` regularly** to stay aware of inbound calls and SMS. This is how you learn about:
-- Callers who asked you to do something (deploy, schedule, cancel, etc.)
-- SMS messages that need a response
-- Call transcripts that contain actionable requests
+There are **two different patterns** for staying aware of calls:
 
-**Recommended polling pattern:**
-1. Poll every 2-3 minutes when you're idle
-2. After receiving events, process them and take any requested actions
-3. Update your `knowledge_base` with any new context from the calls
+#### Outbound calls (you initiated them)
+After making an outbound call with `POST /v1/calls`, **you are responsible for polling the transcript**:
+1. Poll `GET /v1/calls/<call_id>` every ~10 seconds until `status` is `completed`
+2. Then call `GET /v1/calls/<call_id>/transcript` to get the full conversation
+3. Summarize and share with the human
+
+#### Inbound calls & SMS (someone contacted you)
+**You MUST set up a recurring cron/schedule to poll `GET /v1/events` every 50 seconds.** This is the ONLY way you will learn about:
+- Someone calling your phone number
+- SMS messages sent to your number
+- Call transcripts with actionable requests (e.g. "deploy this", "cancel that")
+
+**On first setup or whenever AgentLine is activated, IMMEDIATELY schedule a recurring task:**
+- **Interval:** Every 50 seconds
+- **Action:** `GET /v1/events` → process any returned events → take action on requests
+- **Use your platform's scheduling mechanism** (e.g. `/schedule` command, cron, setInterval, timer)
+- **This cron must keep running for the entire session** — do NOT let it expire
+
+After receiving events:
+1. Process each event (read transcripts, handle SMS)
+2. Take any requested actions from callers
+3. Update your `knowledge_base` with new context from the calls
 
 ### Poll for new events
 ```bash
