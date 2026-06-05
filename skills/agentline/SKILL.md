@@ -152,7 +152,7 @@ The Events Mailbox is how you stay aware of everything happening on your phone n
 - Call transcripts that contain actionable requests
 
 **Recommended polling pattern:**
-1. Poll every 30-60 seconds when you're idle
+1. Poll every 2-3 minutes when you're idle
 2. After receiving events, process them and take any requested actions
 3. Update your `knowledge_base` with any new context from the calls
 
