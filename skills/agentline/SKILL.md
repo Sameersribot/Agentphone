@@ -140,7 +140,7 @@ The Events Mailbox is how you stay aware of everything happening on your phone n
 - `call.completed` — A call ended (inbound or outbound), includes full transcript with everything the caller said
 - `sms.received` — An inbound SMS was received on your agent's number
 
-### ⚡ MANDATORY — Set Up Event Monitoring
+### ⚡ MANDATORY — Set Up Event Monitoring (Token-Efficient)
 
 There are **two different patterns** for staying aware of calls:
 
@@ -150,22 +150,84 @@ After making an outbound call with `POST /v1/calls`, **you are responsible for p
 2. Then call `GET /v1/calls/<call_id>/transcript` to get the full conversation
 3. Summarize and share with the human
 
-#### Inbound calls & SMS (someone contacted you)
-**You MUST set up a recurring cron/schedule to poll `GET /v1/events` every 50 seconds.** This is the ONLY way you will learn about:
-- Someone calling your phone number
-- SMS messages sent to your number
-- Call transcripts with actionable requests (e.g. "deploy this", "cancel that")
+#### Inbound calls & SMS (someone contacted you) — Efficient Polling
 
-**On first setup or whenever AgentLine is activated, IMMEDIATELY schedule a recurring task:**
-- **Interval:** Every 50 seconds
-- **Action:** `GET /v1/events` → process any returned events → take action on requests
-- **Use your platform's scheduling mechanism** (e.g. `/schedule` command, cron, setInterval, timer)
-- **This cron must keep running for the entire session** — do NOT let it expire
+**You MUST start a background event poller**, but you MUST do it **efficiently** to avoid wasting LLM tokens on empty polls.
 
-After receiving events:
-1. Process each event (read transcripts, handle SMS)
-2. Report events to the human (summarize transcripts, relay SMS messages)
-3. Take any requested actions from callers
+> ⚠️ **CRITICAL: Do NOT use the `schedule` tool or cron to poll events.** The schedule tool wakes the LLM on every tick regardless — wasting tokens when the mailbox is empty. Instead, launch the **background polling script** below using `run_command`. The script loops internally and only produces stdout when events exist. Background tasks only notify you when they produce output, so **silent iterations = zero LLM involvement.**
+
+**How it works:**
+1. You write the polling script below to a scratch file (e.g. `agentline_poller.ps1` or `agentline_poller.sh`)
+2. You launch it as a **background command** using `run_command` with `WaitMsBeforeAsync` set to `500` so it goes to background immediately
+3. The script runs in an infinite loop, calling `GET /v1/events/peek` every 50 seconds
+4. **If `count` is 0** → the script stays silent → no stdout → you are NOT woken up → **zero tokens used**
+5. **If `count` > 0** → the script prints `AGENTLINE_EVENTS_FOUND` → background task sends you a message → you wake up and process the events
+
+**On first setup or whenever AgentLine is activated, do these two steps:**
+
+**Step 1 — Write the polling script to a scratch file:**
+
+For **Windows (PowerShell)**, write this to a `.ps1` file:
+```powershell
+param([string]$ApiKey, [string]$BaseUrl = "https://api.agentline.cloud", [int]$Interval = 50)
+$headers = @{ "Authorization" = "Bearer $ApiKey" }
+$peekUrl = "$BaseUrl/v1/events/peek"
+while ($true) {
+    try {
+        $r = Invoke-RestMethod -Uri $peekUrl -Headers $headers -Method Get -ErrorAction Stop
+        if ($r.count -gt 0) {
+            Write-Output "AGENTLINE_EVENTS_FOUND: $($r.count) pending event(s). Call GET /v1/events to consume and process them."
+        }
+    } catch {
+        if ($_.Exception.Response.StatusCode -eq 401) {
+            Write-Output "AGENTLINE_AUTH_ERROR: API key invalid or expired. Check AGENTLINE_API_KEY."
+            break
+        }
+    }
+    Start-Sleep -Seconds $Interval
+}
+```
+
+For **macOS/Linux (Bash)**, write this to a `.sh` file:
+```bash
+#!/usr/bin/env bash
+set -uo pipefail
+API_KEY="$1"; BASE_URL="${2:-https://api.agentline.cloud}"; INTERVAL="${3:-50}"
+while true; do
+  RESP=$(curl -s -w "\n%{http_code}" "$BASE_URL/v1/events/peek" \
+    -H "Authorization: Bearer $API_KEY" 2>/dev/null) || { sleep "$INTERVAL"; continue; }
+  CODE=$(echo "$RESP" | tail -1); BODY=$(echo "$RESP" | sed '$d')
+  if [ "$CODE" = "401" ]; then
+    echo "AGENTLINE_AUTH_ERROR: API key invalid. Check AGENTLINE_API_KEY."; exit 1
+  fi
+  [[ "$CODE" != 2* ]] && { sleep "$INTERVAL"; continue; }
+  COUNT=$(echo "$BODY" | grep -oP '"count"\s*:\s*\K[0-9]+' 2>/dev/null || echo "0")
+  if [ "$COUNT" -gt 0 ]; then
+    echo "AGENTLINE_EVENTS_FOUND: $COUNT pending event(s). Call GET /v1/events to consume and process them."
+  fi
+  sleep "$INTERVAL"
+done
+```
+
+**Step 2 — Launch it as a background command:**
+```
+# Windows example:
+run_command: powershell -ExecutionPolicy Bypass -File "path/to/agentline_poller.ps1" -ApiKey "$AGENTLINE_API_KEY"
+# with WaitMsBeforeAsync = 500
+
+# macOS/Linux example:
+run_command: bash "path/to/agentline_poller.sh" "$AGENTLINE_API_KEY"
+# with WaitMsBeforeAsync = 500
+```
+
+The script will keep running for the entire session in the background.
+
+**When the background task notifies you with `AGENTLINE_EVENTS_FOUND`:**
+1. Call `GET /v1/events` (the consuming endpoint) to retrieve the pending events
+2. Process each event (read transcripts, handle SMS)
+3. Report events to the human (summarize transcripts, relay SMS messages)
+4. Take any requested actions from callers
+5. The background poller continues running — you'll be notified again if more events arrive
 
 ### Poll for new events
 ```bash

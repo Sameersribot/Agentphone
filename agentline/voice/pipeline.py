@@ -31,7 +31,7 @@ from deepgram import LiveTranscriptionEvents
 from agentline.config import settings
 from agentline.database import get_db_conn
 from agentline.voice.stt import create_deepgram_connection, get_stt_options
-from agentline.voice.llm import llm_response, llm_response_stream
+from agentline.voice.llm import llm_response_stream
 from agentline.voice.tts import tts_cartesia
 from agentline.voice.voices import resolve_voice_id, DEFAULT_VOICE_ID
 
@@ -132,79 +132,133 @@ async def run_pipeline(
     dg_connection = create_deepgram_connection()
     utterance_buffer: list[str] = []
 
-    # ── Shared helper: stream LLM → TTS → send audio per sentence ──
-    async def _respond(utterance: str):
-        """Stream the LLM response sentence-by-sentence.
+    # ── Speculative execution helpers ─────────────────────────────
+    async def _speculative_generate(
+        utterance: str,
+        audio_queue: asyncio.Queue,
+    ):
+        """Stream LLM → TTS, buffering audio into *audio_queue*.
 
-        Each sentence is TTS'd and sent to the caller immediately, so the
-        user hears the first sentence within ~0.5-1s instead of waiting
-        for the entire reply + TTS to complete.
+        Runs concurrently with the debounce timer so audio is ready
+        the instant the debounce expires.  A ``None`` sentinel is put
+        into the queue when generation finishes (or on error).
+        """
+        try:
+            async for sentence in llm_response_stream(
+                system_prompt, conversation_history, model_tier
+            ):
+                try:
+                    audio = await tts_cartesia(sentence, voice_id)
+                    await audio_queue.put((audio, sentence))
+                except Exception as e:
+                    logger.error("Call %s — TTS failed during speculative gen: %s", call_id, e)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("Call %s — speculative generation error: %s", call_id, e)
+        finally:
+            await audio_queue.put(None)  # sentinel — generation complete
+
+    async def _schedule_response(utterance: str):
+        """Speculative execution: generate response DURING debounce, flush AFTER.
+
+        Instead of wasting the debounce window doing nothing, we:
+        1. Immediately start LLM → TTS generation (audio buffered in a queue).
+        2. Sleep for DEBOUNCE_SECONDS in parallel.
+        3. If the user resumes speaking, cancel everything and roll back.
+        4. If the debounce expires, commit the turn and flush the pre-generated
+           audio — near-instant playback.
+
+        Result: the user still gets the full debounce patience (no interruptions),
+        but perceives almost zero processing delay after the pause.
         """
         nonlocal pending_response_task
 
-        logger.info("Call %s — Human: %s", call_id, utterance)
+        audio_queue: asyncio.Queue = asyncio.Queue()
+        committed = False  # tracks whether we've committed the turn
 
-        transcript_turns.append({
-            "role": "human",
-            "text": utterance,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        })
-
-        # Save human turn incrementally
-        try:
-            async with get_db_conn() as db:
-                await db.execute(
-                    "UPDATE calls SET transcript=$1 WHERE id=$2",
-                    json.dumps(transcript_turns), call_id,
-                )
-        except Exception as e:
-            logger.warning("Failed to save transcript for call %s: %s", call_id, e)
-
-        # Stream LLM → TTS → caller, sentence by sentence
+        # Tentatively add user message so the LLM has context
         conversation_history.append({"role": "user", "content": utterance})
-        reply_parts: list[str] = []
 
-        async for sentence in llm_response_stream(system_prompt, conversation_history, model_tier):
-            reply_parts.append(sentence)
-            logger.debug("Call %s — streaming sentence: %s", call_id, sentence[:80])
+        # Fire off LLM → TTS generation immediately (don't wait for debounce)
+        gen_task = asyncio.create_task(
+            _speculative_generate(utterance, audio_queue)
+        )
 
-            # TTS this sentence and send audio immediately
-            try:
-                audio = await tts_cartesia(sentence, voice_id)
-                await send_audio(provider_ws, audio, stream_sid)
-            except Exception as e:
-                logger.error("TTS/send failed for call %s: %s", call_id, e)
-
-        full_reply = " ".join(reply_parts)
-        conversation_history.append({"role": "assistant", "content": full_reply})
-
-        logger.info("Call %s — Agent: %s", call_id, full_reply)
-
-        transcript_turns.append({
-            "role": "agent",
-            "text": full_reply,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        })
-
-        # Save agent reply
         try:
-            async with get_db_conn() as db:
-                await db.execute(
-                    "UPDATE calls SET transcript=$1 WHERE id=$2",
-                    json.dumps(transcript_turns), call_id,
-                )
-        except Exception as e:
-            logger.warning("Failed to save transcript for call %s: %s", call_id, e)
-
-        pending_response_task = None
-
-    async def _schedule_response(utterance: str):
-        """Wait DEBOUNCE_SECONDS of silence, then respond.  Cancelled if user resumes."""
-        try:
+            # ── Phase 1: Debounce ─────────────────────────────────
             await asyncio.sleep(DEBOUNCE_SECONDS)
-            await _respond(utterance)
+
+            # User stayed silent → commit the human turn
+            committed = True
+            logger.info("Call %s — Human: %s", call_id, utterance)
+            transcript_turns.append({
+                "role": "human",
+                "text": utterance,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+            try:
+                async with get_db_conn() as db:
+                    await db.execute(
+                        "UPDATE calls SET transcript=$1 WHERE id=$2",
+                        json.dumps(transcript_turns), call_id,
+                    )
+            except Exception as e:
+                logger.warning("Failed to save transcript for call %s: %s", call_id, e)
+
+            # ── Phase 2: Flush buffered audio ─────────────────────
+            reply_parts: list[str] = []
+            while True:
+                item = await audio_queue.get()
+                if item is None:  # sentinel — generation done
+                    break
+                audio, sentence = item
+                reply_parts.append(sentence)
+                logger.debug("Call %s — flushing sentence: %s", call_id, sentence[:80])
+                try:
+                    await send_audio(provider_ws, audio, stream_sid)
+                except Exception as e:
+                    logger.error("Call %s — send audio failed: %s", call_id, e)
+
+            await gen_task  # ensure clean completion
+
+            # ── Phase 3: Commit assistant reply ───────────────────
+            full_reply = " ".join(reply_parts)
+            conversation_history.append({"role": "assistant", "content": full_reply})
+            logger.info("Call %s — Agent: %s", call_id, full_reply)
+
+            transcript_turns.append({
+                "role": "agent",
+                "text": full_reply,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+            try:
+                async with get_db_conn() as db:
+                    await db.execute(
+                        "UPDATE calls SET transcript=$1 WHERE id=$2",
+                        json.dumps(transcript_turns), call_id,
+                    )
+            except Exception as e:
+                logger.warning("Failed to save transcript for call %s: %s", call_id, e)
+
         except asyncio.CancelledError:
-            logger.debug("Call %s — debounce cancelled (user resumed speaking)", call_id)
+            # User resumed speaking — discard speculative work
+            gen_task.cancel()
+            try:
+                await gen_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            # Roll back the tentative user message if we haven't committed yet
+            if not committed:
+                for i in range(len(conversation_history) - 1, -1, -1):
+                    if conversation_history[i] == {"role": "user", "content": utterance}:
+                        conversation_history.pop(i)
+                        break
+            logger.debug("Call %s — speculative response discarded (user resumed speaking)", call_id)
+            raise
+
+        finally:
+            pending_response_task = None
 
     # This event fires for each transcript segment
     async def on_transcript(self, result, **kwargs):
