@@ -38,7 +38,9 @@ Give your AI agent a real phone number and voice calls — no servers, no webhoo
    - Apply via `PATCH /v1/agents/$AGENTLINE_AGENT_ID` with `{"voice_id": "chosen_preset"}`
    - Available presets: `female-1`, `female-2`, `male-1` — or any Cartesia voice UUID
 
-> ⚠️ **Do NOT skip steps or change the order.** The human should have a working agent with their chosen area code number and voice by the end.
+5. **Start the background event poller** — This is **MANDATORY**. Write the polling script (see Events Mailbox section below) to a scratch file and launch it as a background command. Without this, you will miss all inbound calls and SMS messages.
+
+> ⚠️ **Do NOT skip ANY steps.** Steps 1-4 set up the agent. Step 5 keeps it alive and aware of incoming calls/texts.
 
 ---
 
