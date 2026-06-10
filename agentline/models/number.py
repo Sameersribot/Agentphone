@@ -10,7 +10,8 @@ class NumberProvision(BaseModel):
     agent_id: str
     country: str = "US"  # Default to US (SignalWire)
     number_type: str = "local"  # local, tollfree
-    pattern: str | None = None  # Area code filter (e.g. '212' for NYC)
+    area_code: str | None = None  # Preferred 3-digit US area code (e.g. '212' for NYC, '415' for SF)
+    pattern: str | None = None  # Legacy: loose digit match (prefer area_code instead)
 
 
 class NumberOut(BaseModel):

@@ -16,6 +16,7 @@ from agentline.signalwire_client import (
     provision_number as signalwire_provision_number,
     release_number as signalwire_release_number,
     configure_number_webhooks as signalwire_configure_webhooks,
+    search_available_numbers as signalwire_search_numbers,
 )
 from agentline.billing import (
     NUMBER_PROVISION_COST,
@@ -26,6 +27,40 @@ from agentline.billing import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/numbers", tags=["Numbers"])
+
+
+@router.get("/search", operation_id="search_available_numbers")
+async def search_numbers(
+    area_code: str | None = None,
+    number_type: str = "local",
+    limit: int = 10,
+    account=Depends(get_current_account),
+):
+    """
+    Search available US phone numbers by area code without buying.
+    Use this to preview what numbers are available before provisioning.
+
+    Query params:
+      - area_code: 3-digit US area code (e.g. "212" for NYC, "415" for SF)
+      - number_type: "local" | "tollfree" (default: "local")
+      - limit: max results to return (default: 10, max: 30)
+
+    Returns a list of available numbers with their area code, locality, and capabilities.
+    """
+    try:
+        results = await signalwire_search_numbers(
+            area_code=area_code,
+            number_type=number_type,
+            limit=limit,
+        )
+        return {
+            "area_code": area_code,
+            "number_type": number_type,
+            "count": len(results),
+            "available_numbers": results,
+        }
+    except Exception as e:
+        raise HTTPException(400, str(e))
 
 
 @router.post("", operation_id="buy_phone_number")
@@ -43,7 +78,8 @@ async def provision(
       - agent_id: str (required)
       - country: str (must be "US")
       - number_type: "local" | "tollfree"
-      - pattern: optional area code filter (e.g. "212" for NYC)
+      - area_code: preferred 3-digit US area code (e.g. "212" for NYC)
+      - pattern: legacy loose digit match (prefer area_code)
     """
     if body.country.upper() != "US":
         raise HTTPException(400, "Only US numbers via SignalWire are supported.")
@@ -75,11 +111,12 @@ async def provision(
     except ValueError as e:
         raise HTTPException(402, str(e))
 
-    # Provision via SignalWire
+    # Provision via SignalWire (area_code takes priority over pattern)
     try:
         number_data = await signalwire_provision_number(
             country=body.country,
             number_type=body.number_type,
+            area_code=body.area_code,
             pattern=body.pattern,
             agent_id=body.agent_id,
         )

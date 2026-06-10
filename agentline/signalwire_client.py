@@ -140,9 +140,84 @@ async def send_sms(
     except Exception as e:
         raise Exception(f"SignalWire SMS failed: {e}")
 
+async def search_available_numbers(
+    area_code: str | None = None,
+    country: str = "US",
+    number_type: str = "local",
+    limit: int = 10,
+) -> list[dict]:
+    """
+    Search for available phone numbers in SignalWire's inventory without buying.
+    Uses the dedicated AreaCode parameter for reliable area code filtering.
+
+    Args:
+        area_code: 3-digit US area code (e.g. "212" for NYC, "415" for SF)
+        country: Country code (only "US" supported)
+        number_type: "local" or "tollfree"
+        limit: Max results to return (default 10, max 30)
+
+    Returns:
+        List of dicts with phone_number, area_code, locality, region, etc.
+    """
+    if country.upper() != "US":
+        raise Exception("SignalWire search currently only configured for US.")
+
+    type_path = "TollFree" if number_type == "tollfree" else "Local"
+    search_url = f"{_get_base_url()}/AvailablePhoneNumbers/US/{type_path}.json"
+
+    params = {}
+    if area_code:
+        # Validate area code format
+        if not area_code.isdigit() or len(area_code) != 3:
+            raise Exception(f"Invalid area code '{area_code}'. Must be exactly 3 digits (e.g. '212').")
+        # Use the dedicated AreaCode parameter — NOT Contains which does
+        # a loose substring match and could return numbers from wrong area codes
+        params["AreaCode"] = area_code
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(search_url, auth=_get_auth(), params=params)
+            resp.raise_for_status()
+            data = resp.json()
+            available = data.get("available_phone_numbers", [])
+
+            results = []
+            for num in available[:min(limit, 30)]:
+                phone = num.get("phone_number", "")
+                # Extract area code from E.164 number (+1NXXNXXXXXX)
+                extracted_area = phone[2:5] if len(phone) >= 5 else ""
+                results.append({
+                    "phone_number": phone,
+                    "area_code": extracted_area,
+                    "friendly_name": num.get("friendly_name", phone),
+                    "locality": num.get("locality", ""),
+                    "region": num.get("region", ""),
+                    "postal_code": num.get("postal_code", ""),
+                    "capabilities": {
+                        "voice": num.get("capabilities", {}).get("voice", False),
+                        "sms": num.get("capabilities", {}).get("SMS", False),
+                        "mms": num.get("capabilities", {}).get("MMS", False),
+                    },
+                })
+
+            logger.info(
+                "SignalWire search: area_code=%s → %d results",
+                area_code or "any", len(results),
+            )
+            return results
+
+    except httpx.HTTPStatusError as e:
+        raise Exception(f"SignalWire number search failed: {e.response.text}")
+    except Exception as e:
+        if "SignalWire" in str(e):
+            raise
+        raise Exception(f"SignalWire number search failed: {e}")
+
+
 async def provision_number(
     country: str = "US",
     number_type: str = "local",
+    area_code: str | None = None,
     pattern: str | None = None,
     agent_id: str | None = None,
 ) -> dict:
@@ -150,14 +225,33 @@ async def provision_number(
     Search for and buy a phone number from SignalWire's inventory.
     Automatically configures Voice URL and SMS URL so inbound calls
     are routed to our server.
+
+    Args:
+        country: Country code (only "US" supported)
+        number_type: "local" or "tollfree"
+        area_code: Preferred 3-digit US area code (e.g. "212" for NYC).
+                   Uses SignalWire's AreaCode parameter for precise filtering.
+        pattern: Legacy pattern filter (falls back to Contains if area_code not set)
+        agent_id: Agent to associate with this number
     """
     if country.upper() != "US":
         raise Exception("SignalWire provisioning currently only configured for US.")
 
-    search_url = f"{_get_base_url()}/AvailablePhoneNumbers/US/Local.json"
+    type_path = "TollFree" if number_type == "tollfree" else "Local"
+    search_url = f"{_get_base_url()}/AvailablePhoneNumbers/US/{type_path}.json"
+
     params = {}
-    if pattern:
+    if area_code:
+        # Validate area code format
+        if not area_code.isdigit() or len(area_code) != 3:
+            raise Exception(f"Invalid area code '{area_code}'. Must be exactly 3 digits (e.g. '212').")
+        # Use the dedicated AreaCode parameter for precise area code matching
+        params["AreaCode"] = area_code
+        logger.info("Searching for numbers with area code: %s", area_code)
+    elif pattern:
+        # Legacy fallback: use Contains for loose matching
         params["Contains"] = pattern
+        logger.info("Searching for numbers matching pattern: %s", pattern)
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
@@ -166,10 +260,14 @@ async def provision_number(
             resp.raise_for_status()
             data = resp.json()
             available = data.get("available_phone_numbers", [])
-            
+
+            filter_desc = f"area code {area_code}" if area_code else f"pattern {pattern}" if pattern else "any area code"
             if not available:
-                raise Exception(f"No {number_type} numbers available in US matching pattern {pattern}")
-            
+                raise Exception(
+                    f"No {number_type} numbers available in US for {filter_desc}. "
+                    "Try a different area code or omit it to get any available number."
+                )
+
             chosen_number = available[0]["phone_number"]
 
             # 2. Buy + configure webhook URLs for inbound routing
@@ -188,8 +286,10 @@ async def provision_number(
             buy_result = buy_resp.json()
 
             logger.info(
-                "Provisioned %s via SignalWire (SID: %s) — Voice URL: %s",
-                chosen_number, buy_result.get("sid"),
+                "Provisioned %s (area code: %s) via SignalWire (SID: %s) — Voice URL: %s",
+                chosen_number,
+                chosen_number[2:5] if len(chosen_number) >= 5 else "?",
+                buy_result.get("sid"),
                 f"{settings.base_url_clean}/signalwire/inbound",
             )
 
@@ -200,6 +300,8 @@ async def provision_number(
     except httpx.HTTPStatusError as e:
         raise Exception(f"SignalWire number provision failed: {e.response.text}")
     except Exception as e:
+        if "SignalWire" in str(e):
+            raise
         raise Exception(f"SignalWire number provision failed: {e}")
 
 
