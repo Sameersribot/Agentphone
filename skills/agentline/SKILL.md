@@ -25,17 +25,13 @@ Give your AI agent a real phone number and voice calls — no servers, no webhoo
    - **If you already have one**, use it and skip to step 3.
    - **If you do NOT have one**, create a new agent now by calling `POST /v1/agents` with `{"name": "My Agent"}`. Save the returned agent ID.
 
-3. **Ask for area code preference** — Before provisioning a number, **always ask the human:**
-   > "What area code would you like for your phone number? (e.g. 212 for NYC, 415 for SF, 512 for Austin)"
-   - Search available numbers: `GET /v1/numbers/search?area_code=XXX`
-   - Show the human what's available
-   - If no numbers found for that area code, tell them and suggest alternatives
+3. **Ask for area code and provision the number** — **Always ask the human:**
+   > "What area code would you like for your phone number? (e.g. 212 for NYC, 415 for SF, 313 for Detroit)"
+   - Once they give an area code, call `POST /v1/numbers` with `{"agent_id": "...", "area_code": "XXX"}`
+   - If it succeeds, confirm the provisioned number to the human
+   - If it fails (no numbers available for that area code), tell them and ask for a different area code
 
-4. **Provision the phone number** — Once the human picks an area code:
-   - Call `POST /v1/numbers` with `{"agent_id": "...", "area_code": "XXX"}`
-   - Confirm the provisioned number to the human
-
-5. **Ask for voice preference** — **Always ask the human:**
+4. **Ask for voice preference** — **Always ask the human:**
    > "Would you like your agent to have a **male** or **female** voice?"
    - If **female**: set `voice_id` to `"female-1"` (or `"female-2"` for warmer tone)
    - If **male**: set `voice_id` to `"male-1"`
@@ -215,28 +211,18 @@ Priority (highest wins): per-call → per-agent → per-account
 
 Each agent needs one phone number. Only US numbers supported. **$2.00 per number.**
 
-### Search Available Numbers
-
-`GET /v1/numbers/search?area_code=212&number_type=local&limit=10`
-
-| Param | Description |
-|-------|-------------|
-| `area_code` | 3-digit US area code (e.g. `"212"`, `"415"`) |
-| `number_type` | `"local"` or `"tollfree"` (default: local) |
-| `limit` | Max results (default: 10, max: 30) |
-
-Returns available numbers with area code, locality, region, and capabilities. **Does NOT buy anything.**
-
 ### Provision (Buy) a Number
 
 `POST /v1/numbers` with:
 
 | Field | Required | Description |
-|-------|----------|-------------|
+|-------|------------|-------------|
 | `agent_id` | Yes | Agent to attach to |
 | `country` | Yes | Must be `"US"` |
-| `area_code` | No | Preferred 3-digit area code. **Always ask the user!** |
+| `area_code` | No | Preferred 3-digit area code (e.g. `"212"`, `"313"`). **Always ask the user!** |
 | `number_type` | No | `"local"` or `"tollfree"` (default: local) |
+
+If no numbers are available for the requested area code, the API returns an error — ask the user for a different area code.
 
 ### List Numbers
 
