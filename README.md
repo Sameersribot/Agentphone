@@ -83,3 +83,100 @@ This project currently supports **Plivo** and **SignalWire**. A full Telnyx reve
 ## API Docs
 
 Once running, visit `http://localhost:8000/docs` for the interactive Swagger UI.
+
+---
+
+## MCP Server Integration
+
+AgentLine exposes all its REST endpoints as **MCP (Model Context Protocol) tools**, letting AI agents (Claude Desktop, Cursor, custom agents) call telephony functions directly — no curl or HTTP wrappers needed.
+
+### Quick Start
+
+1. **Start AgentLine** (locally or deployed):
+   ```bash
+   uvicorn agentline.main:app --port 8000
+   ```
+
+2. **Connect from Claude Desktop** — copy `claude_desktop_config_example.json` to your Claude Desktop config folder:
+   
+   **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`  
+   **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+
+   ```json
+   {
+     "mcpServers": {
+       "agentline": {
+         "command": "npx",
+         "args": [
+           "-y", "mcp-remote@latest",
+           "http://localhost:8000/mcp",
+           "--header", "Authorization: Bearer sk_live_YOUR_KEY"
+         ]
+       }
+     }
+   }
+   ```
+
+3. **For production** (deployed on Railway/Render):
+   ```json
+   {
+     "mcpServers": {
+       "agentline": {
+         "command": "npx",
+         "args": [
+           "-y", "mcp-remote@latest",
+           "https://api.agentline.cloud/mcp",
+           "--header", "Authorization: Bearer sk_live_YOUR_KEY"
+         ]
+       }
+     }
+   }
+   ```
+
+### Available MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `create_agent` | Create a new AI voice agent |
+| `list_agents` | List all agents |
+| `get_agent` | Get agent details |
+| `update_agent` | Update agent config/prompt/voice |
+| `delete_agent` | Delete an agent |
+| `make_outbound_call` | Initiate an outbound phone call |
+| `list_calls` | List call history |
+| `get_call_details` | Get call details |
+| `get_call_transcript` | Get the full transcript of a call |
+| `speak_on_call` | Send text to be spoken on an active call |
+| `hangup_call` | End an active call |
+| `listen_to_call` | Get caller's speech from an active call |
+| `buy_phone_number` | Provision a new US phone number |
+| `list_phone_numbers` | List all phone numbers |
+| `get_phone_number` | Get phone number details |
+| `attach_existing_number` | Attach an existing number to an agent |
+| `reassign_number` | Move a number to a different agent |
+| `send_sms` | Send an SMS message |
+| `list_messages` | List messages |
+| `list_conversations` | List SMS conversations |
+| `poll_events` | Poll event mailbox (consume-once) |
+| `peek_events` | Peek at events without consuming |
+| `get_account_balance` | Check account balance |
+| `get_expenditure_breakdown` | Spending breakdown by category |
+| `get_call_charges` | List individual call charges |
+| `get_number_charges` | List number provisioning charges |
+| `verify_call_billing` | Verify billing accuracy for a call |
+| `get_spending_summary` | Monthly spending summary |
+| `get_usage_stats` | Usage statistics |
+| `topup_balance` | Add funds to account |
+| `list_available_voices` | List voice presets |
+| `set_account_voice` | Set default voice |
+| `reset_account_voice` | Reset to system default voice |
+
+### Using with Other MCP Clients
+
+Any MCP-compatible client can connect to `http://your-server:8000/mcp` using the SSE transport. Pass your API key via the `Authorization` header.
+
+### Testing with MCP Inspector
+
+```bash
+npx @modelcontextprotocol/inspector http://localhost:8000/mcp
+```

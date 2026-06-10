@@ -15,7 +15,7 @@ from agentline.models.agent import AgentCreate, AgentUpdate, AgentOut
 router = APIRouter(prefix="/v1/agents", tags=["Agents"])
 
 
-@router.post("", response_model=AgentOut)
+@router.post("", response_model=AgentOut, operation_id="create_agent")
 async def create_agent(
     body: AgentCreate,
     account=Depends(get_current_account),
@@ -56,7 +56,7 @@ async def create_agent(
     )
 
 
-@router.get("")
+@router.get("", operation_id="list_agents")
 async def list_agents(
     account=Depends(get_current_account),
     db=Depends(get_db),
@@ -69,7 +69,7 @@ async def list_agents(
     return [dict(r) for r in rows]
 
 
-@router.get("/{agent_id}")
+@router.get("/{agent_id}", operation_id="get_agent")
 async def get_agent(
     agent_id: str,
     account=Depends(get_current_account),
@@ -86,7 +86,7 @@ async def get_agent(
     return dict(row)
 
 
-@router.patch("/{agent_id}")
+@router.patch("/{agent_id}", operation_id="update_agent")
 async def update_agent(
     agent_id: str,
     body: AgentUpdate,
@@ -125,7 +125,7 @@ async def update_agent(
     return dict(row)
 
 
-@router.delete("/{agent_id}")
+@router.delete("/{agent_id}", operation_id="delete_agent")
 async def delete_agent(
     agent_id: str,
     account=Depends(get_current_account),

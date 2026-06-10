@@ -39,7 +39,7 @@ class VoiceSettingOut(BaseModel):
 
 # ── Endpoints ─────────────────────────────────────────────────
 
-@router.get("/v1/voices")
+@router.get("/v1/voices", operation_id="list_available_voices")
 async def get_available_voices():
     """
     List all available voice presets.
@@ -58,7 +58,7 @@ async def get_available_voices():
     }
 
 
-@router.get("/v1/account/voice")
+@router.get("/v1/account/voice", operation_id="get_account_voice")
 async def get_account_voice(
     account=Depends(get_current_account),
     db=Depends(get_db),
@@ -82,7 +82,7 @@ async def get_account_voice(
     )
 
 
-@router.patch("/v1/account/voice")
+@router.patch("/v1/account/voice", operation_id="set_account_voice")
 async def update_account_voice(
     body: VoiceSettingUpdate,
     account=Depends(get_current_account),
@@ -126,7 +126,7 @@ async def update_account_voice(
     )
 
 
-@router.delete("/v1/account/voice")
+@router.delete("/v1/account/voice", operation_id="reset_account_voice")
 async def reset_account_voice(
     account=Depends(get_current_account),
     db=Depends(get_db),

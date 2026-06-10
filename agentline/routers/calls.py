@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/calls", tags=["Calls"])
 
 
-@router.post("")
+@router.post("", operation_id="make_outbound_call")
 async def create_call(
     body: CallRequest,
     account=Depends(get_current_account),
@@ -113,7 +113,7 @@ async def create_call(
     }
 
 
-@router.get("")
+@router.get("", operation_id="list_calls")
 async def list_calls(
     agent_id: str | None = None, status: str | None = None,
     limit: int = 50, offset: int = 0,
@@ -136,7 +136,7 @@ async def list_calls(
     return [dict(r) for r in rows]
 
 
-@router.get("/{call_id}")
+@router.get("/{call_id}", operation_id="get_call_details")
 async def get_call(call_id: str, account=Depends(get_current_account), db=Depends(get_db)):
     """Get call details including transcript."""
     row = await db.fetchrow(
@@ -147,7 +147,7 @@ async def get_call(call_id: str, account=Depends(get_current_account), db=Depend
     return dict(row)
 
 
-@router.get("/{call_id}/transcript")
+@router.get("/{call_id}/transcript", operation_id="get_call_transcript")
 async def get_transcript(call_id: str, account=Depends(get_current_account), db=Depends(get_db)):
     """Get the full transcript for a call."""
     row = await db.fetchrow(
@@ -159,7 +159,7 @@ async def get_transcript(call_id: str, account=Depends(get_current_account), db=
     return {"call_id": call_id, "status": row["status"], "transcript": row["transcript"] or []}
 
 
-@router.post("/{call_id}/speak")
+@router.post("/{call_id}/speak", operation_id="speak_on_call")
 async def speak_on_call(
     call_id: str,
     body: dict,
@@ -197,7 +197,7 @@ async def speak_on_call(
     return {"queued": True, "call_id": call_id, "text": text}
 
 
-@router.post("/{call_id}/hangup")
+@router.post("/{call_id}/hangup", operation_id="hangup_call")
 async def hangup_call(
     call_id: str,
     account=Depends(get_current_account),
@@ -242,7 +242,7 @@ async def hangup_call(
     return {"call_id": call_id, "status": "completed", "message": "Call terminated."}
 
 
-@router.get("/{call_id}/listen")
+@router.get("/{call_id}/listen", operation_id="listen_to_call")
 async def listen_from_call(
     call_id: str,
     wait: bool = Query(False, description="Long-poll: hold connection until new speech arrives (max 25s)"),

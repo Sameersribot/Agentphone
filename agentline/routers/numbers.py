@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/numbers", tags=["Numbers"])
 
 
-@router.post("")
+@router.post("", operation_id="buy_phone_number")
 async def provision(
     body: NumberProvision,
     account=Depends(get_current_account),
@@ -154,7 +154,7 @@ async def provision(
     }
 
 
-@router.get("")
+@router.get("", operation_id="list_phone_numbers")
 async def list_numbers(
     account=Depends(get_current_account),
     db=Depends(get_db),
@@ -169,7 +169,7 @@ async def list_numbers(
     return [dict(r) for r in rows]
 
 
-@router.get("/{number_id}")
+@router.get("/{number_id}", operation_id="get_phone_number")
 async def get_number(
     number_id: str,
     account=Depends(get_current_account),
@@ -186,7 +186,7 @@ async def get_number(
     return dict(row)
 
 
-@router.post("/attach")
+@router.post("/attach", operation_id="attach_existing_number")
 async def attach_existing_number(
     phone_number: str,
     agent_id: str,
@@ -289,7 +289,7 @@ async def attach_existing_number(
     }
 
 
-@router.patch("/{number_id}/reassign")
+@router.patch("/{number_id}/reassign", operation_id="reassign_number")
 async def reassign_number(
     number_id: str,
     agent_id: str,

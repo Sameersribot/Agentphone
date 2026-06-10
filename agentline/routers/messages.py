@@ -16,7 +16,7 @@ from agentline.signalwire_client import send_sms as signalwire_send_sms
 router = APIRouter(prefix="/v1/messages", tags=["Messages"])
 
 
-@router.post("")
+@router.post("", operation_id="send_sms")
 async def send_message(
     body: MessageSend,
     account=Depends(get_current_account),
@@ -120,7 +120,7 @@ async def send_message(
     }
 
 
-@router.get("")
+@router.get("", operation_id="list_messages")
 async def list_messages(
     agent_id: str | None = None,
     conversation_id: str | None = None,
@@ -157,7 +157,7 @@ async def list_messages(
     return [dict(r) for r in rows]
 
 
-@router.get("/conversations")
+@router.get("/conversations", operation_id="list_conversations")
 async def list_conversations(
     agent_id: str | None = None,
     account=Depends(get_current_account),

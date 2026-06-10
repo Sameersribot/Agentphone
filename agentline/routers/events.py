@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/events", tags=["Events"])
 
 
-@router.get("")
+@router.get("", operation_id="poll_events")
 async def list_events(
     agent_id: str | None = None,
     event_type: str | None = None,
@@ -97,7 +97,7 @@ async def list_events(
     }
 
 
-@router.get("/peek")
+@router.get("/peek", operation_id="peek_events")
 async def peek_events(
     agent_id: str | None = None,
     limit: int = Query(50, le=200),

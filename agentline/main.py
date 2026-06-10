@@ -119,17 +119,18 @@ app.include_router(billing_api.router)
 app.include_router(voice_settings.router)
 
 
-@app.get("/", tags=["Health"])
+@app.get("/", tags=["Health"], operation_id="health_check")
 async def root():
     return {
         "service": "AgentLine",
         "version": "0.2.0",
         "status": "operational",
         "telephony_providers": ["signalwire"],
+        "mcp_endpoint": "/mcp",
     }
 
 
-@app.get("/health", tags=["Health"])
+@app.get("/health", tags=["Health"], operation_id="health_status")
 async def health():
     status = "healthy"
     try:
@@ -142,7 +143,7 @@ async def health():
     return {"status": status}
 
 
-@app.get("/debug/urls", tags=["Health"])
+@app.get("/debug/urls", tags=["Health"], operation_id="debug_callback_urls")
 async def debug_urls():
     """Show the callback URLs that providers will receive — useful for debugging."""
     from agentline.config import settings
@@ -165,4 +166,38 @@ async def debug_urls():
             "llm": "GPT-4o-mini / GPT-4o",
         },
     }
+
+
+# ── MCP Server Integration ────────────────────────────────────
+# Exposes all user-facing REST endpoints as MCP tools.
+# Internal SignalWire webhooks, debug endpoints, and health checks are excluded.
+# Access via: http://localhost:8000/mcp (or your deployed URL + /mcp)
+
+from fastapi_mcp import FastApiMCP
+
+mcp = FastApiMCP(
+    app,
+    name="AgentLine",
+    description=(
+        "AI telephony platform — make phone calls, manage agents, "
+        "provision numbers, send SMS, check billing, and poll events. "
+        "Requires Authorization: Bearer sk_live_xxx header."
+    ),
+    # Exclude internal provider webhooks and debug/health endpoints
+    exclude_operations=[
+        "signalwire_answer",
+        "signalwire_stream",
+        "signalwire_hangup",
+        "signalwire_inbound_call",
+        "signalwire_inbound_hangup",
+        "signalwire_sms_callback",
+        "health_check",
+        "health_status",
+        "debug_callback_urls",
+    ],
+)
+mcp.mount_http(mount_path="/mcp")
+
+logger.info("MCP server mounted at /mcp")
+
 

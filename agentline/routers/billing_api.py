@@ -30,7 +30,7 @@ router = APIRouter(prefix="/v1/billing", tags=["Billing"])
 # 1. Balance Check
 # ────────────────────────────────────────────────────────────
 
-@router.get("/balance")
+@router.get("/balance", operation_id="get_account_balance")
 async def get_balance(
     account=Depends(get_current_account),
     db=Depends(get_db),
@@ -74,7 +74,7 @@ async def get_balance(
 # 2. Expenditure (full breakdown)
 # ────────────────────────────────────────────────────────────
 
-@router.get("/expenditure")
+@router.get("/expenditure", operation_id="get_expenditure_breakdown")
 async def get_expenditure(
     period: str = Query(
         "current_month",
@@ -166,7 +166,7 @@ async def get_expenditure(
 # 2a. Expenditure — Calls Only
 # ────────────────────────────────────────────────────────────
 
-@router.get("/expenditure/calls")
+@router.get("/expenditure/calls", operation_id="get_call_charges")
 async def get_call_expenditure(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -230,7 +230,7 @@ async def get_call_expenditure(
 # 2b. Expenditure — Numbers Only
 # ────────────────────────────────────────────────────────────
 
-@router.get("/expenditure/numbers")
+@router.get("/expenditure/numbers", operation_id="get_number_charges")
 async def get_number_expenditure(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -287,7 +287,7 @@ async def get_number_expenditure(
 # 3. Verify Balance Deduction After a Call
 # ────────────────────────────────────────────────────────────
 
-@router.get("/verify/{call_id}")
+@router.get("/verify/{call_id}", operation_id="verify_call_billing")
 async def verify_call_deduction(
     call_id: str,
     account=Depends(get_current_account),
@@ -379,7 +379,7 @@ async def verify_call_deduction(
 # 4. Monthly Spending Summary
 # ────────────────────────────────────────────────────────────
 
-@router.get("/summary")
+@router.get("/summary", operation_id="get_spending_summary")
 async def get_spending_summary(
     months: int = Query(6, ge=1, le=24, description="Number of months to show"),
     account=Depends(get_current_account),

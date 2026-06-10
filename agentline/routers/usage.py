@@ -17,7 +17,7 @@ from agentline.billing import (
 router = APIRouter(prefix="/v1/usage", tags=["Usage"])
 
 
-@router.get("")
+@router.get("", operation_id="get_usage_stats")
 async def get_usage(
     period: str = "current_month",
     account=Depends(get_current_account),
@@ -80,7 +80,7 @@ async def get_usage(
     }
 
 
-@router.get("/balance")
+@router.get("/balance", operation_id="get_usage_balance")
 async def get_balance(
     account=Depends(get_current_account),
     db=Depends(get_db),
@@ -96,7 +96,7 @@ async def get_balance(
     }
 
 
-@router.get("/transactions")
+@router.get("/transactions", operation_id="get_billing_transactions")
 async def get_transactions(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -146,7 +146,7 @@ async def get_transactions(
     }
 
 
-@router.post("/topup")
+@router.post("/topup", operation_id="topup_balance")
 async def topup_balance(
     body: dict,
     account=Depends(get_current_account),
