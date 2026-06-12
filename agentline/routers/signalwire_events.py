@@ -165,7 +165,7 @@ async def signalwire_stream(websocket: WebSocket, call_id: str):
 # Voice — Outbound Call Answered
 # ────────────────────────────────────────────────────────────
 
-@router.post("/answer/{call_id}")
+@router.post("/answer/{call_id}", operation_id="signalwire_answer")
 async def signalwire_answer(request: Request, call_id: str):
     """Call answered — connect to our streaming pipeline via WebSocket."""
     form = await request.form()
@@ -188,7 +188,7 @@ async def signalwire_answer(request: Request, call_id: str):
 # SMS — Inbound SMS Callback
 # ────────────────────────────────────────────────────────────
 
-@router.post("/sms")
+@router.post("/sms", operation_id="signalwire_sms_callback")
 async def signalwire_sms_callback(request: Request):
     """
     Receive inbound SMS from SignalWire.
@@ -304,7 +304,7 @@ async def signalwire_sms_callback(request: Request):
 # Voice — Hangup (StatusCallback)
 # ────────────────────────────────────────────────────────────
 
-@router.post("/hangup/{call_id}")
+@router.post("/hangup/{call_id}", operation_id="signalwire_hangup")
 async def signalwire_hangup(request: Request, call_id: str):
     """SignalWire POSTs here when the call ends (StatusCallback)."""
     form = await request.form()
@@ -404,7 +404,7 @@ async def signalwire_hangup(request: Request, call_id: str):
 # Voice — Inbound Call on a SignalWire US number
 # ────────────────────────────────────────────────────────────
 
-@router.post("/inbound")
+@router.post("/inbound", operation_id="signalwire_inbound_call")
 async def signalwire_inbound_call(request: Request):
     """Handle incoming calls on SignalWire US numbers."""
     form = await request.form()
@@ -514,7 +514,7 @@ async def signalwire_inbound_call(request: Request):
 # Voice — Inbound Call Hangup (number-level StatusCallback fallback)
 # ────────────────────────────────────────────────────────────
 
-@router.post("/inbound_hangup")
+@router.post("/inbound_hangup", operation_id="signalwire_inbound_hangup")
 async def signalwire_inbound_hangup(request: Request):
     """
     Fallback hangup handler for inbound calls on numbers that still have

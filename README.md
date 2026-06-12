@@ -133,43 +133,29 @@ AgentLine exposes all its REST endpoints as **MCP (Model Context Protocol) tools
    }
    ```
 
-### Available MCP Tools
-
-| Tool | Description |
-|------|-------------|
-| `create_agent` | Create a new AI voice agent |
-| `list_agents` | List all agents |
-| `get_agent` | Get agent details |
-| `update_agent` | Update agent config/prompt/voice |
-| `delete_agent` | Delete an agent |
-| `make_outbound_call` | Initiate an outbound phone call |
-| `list_calls` | List call history |
-| `get_call_details` | Get call details |
-| `get_call_transcript` | Get the full transcript of a call |
-| `speak_on_call` | Send text to be spoken on an active call |
-| `hangup_call` | End an active call |
-| `listen_to_call` | Get caller's speech from an active call |
-| `buy_phone_number` | Provision a new US phone number |
-| `list_phone_numbers` | List all phone numbers |
-| `get_phone_number` | Get phone number details |
-| `attach_existing_number` | Attach an existing number to an agent |
-| `reassign_number` | Move a number to a different agent |
-| `send_sms` | Send an SMS message |
-| `list_messages` | List messages |
-| `list_conversations` | List SMS conversations |
-| `poll_events` | Poll event mailbox (consume-once) |
-| `peek_events` | Peek at events without consuming |
-| `get_account_balance` | Check account balance |
-| `get_expenditure_breakdown` | Spending breakdown by category |
-| `get_call_charges` | List individual call charges |
-| `get_number_charges` | List number provisioning charges |
-| `verify_call_billing` | Verify billing accuracy for a call |
-| `get_spending_summary` | Monthly spending summary |
-| `get_usage_stats` | Usage statistics |
-| `topup_balance` | Add funds to account |
-| `list_available_voices` | List voice presets |
-| `set_account_voice` | Set default voice |
-| `reset_account_voice` | Reset to system default voice |
+| Category | Tool | Description |
+|----------|------|-------------|
+| **Agents** | `create_agent` | Create a new AI voice agent |
+| | `list_agents` | List all agents |
+| | `get_agent` | Get agent details |
+| | `update_agent` | Update agent configuration (prompt, greeting, voice) |
+| | `delete_agent` | Delete an agent |
+| **Phone Numbers** | `buy_phone_number` | Search and provision a new local US phone number |
+| | `list_phone_numbers` | List all phone numbers provisioned on the account |
+| **Calls** | `make_outbound_call` | Initiate an outbound call and run hosted voice conversation |
+| | `list_calls` | List voice call history with filter status |
+| | `get_call_details` | Get details and metadata of a specific call |
+| | `get_call_transcript` | Retrieve the conversation transcript for a call |
+| | `hangup_call` | Forcefully end an ongoing voice call |
+| **SMS** | `list_messages` | List inbound message history (inbound only) |
+| **Events** | `poll_events` | Poll events from the consume-once mailbox |
+| | `peek_events` | Peek at mailbox events without consuming them |
+| **Billing** | `get_account_balance` | Check current prepaid account balance |
+| | `get_expenditure_breakdown` | Get spending breakdown split by category |
+| **Voice** | `list_available_voices` | List all available voice presets |
+| | `get_account_voice` | Get current account-wide default voice |
+| | `set_account_voice` | Set default voice for all agents under this account |
+| | `reset_account_voice` | Reset account default voice to system default (`male-1`) |
 
 ### Using with Other MCP Clients
 
