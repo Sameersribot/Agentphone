@@ -1,13 +1,6 @@
 """
 AgentLine — Calls Router
 Initiate and manage voice calls.
-
-Agent-Controlled Relay Mode:
-  1. Agent creates call → POST /v1/calls
-  2. Agent polls for speech → GET /v1/calls/{id}/listen (supports long-polling)
-  3. Agent sends response → POST /v1/calls/{id}/speak
-  4. Agent ends the call → POST /v1/calls/{id}/hangup
-  No webhook registration needed.
 """
 
 import secrets
@@ -168,10 +161,9 @@ async def speak_on_call(
 ):
     """
     Send text to be spoken on an active call.
-    
-    The provider's wait loop (Plivo or SignalWire) will pick this up
-    within ~3 seconds and speak it to the person on the phone.
-    
+
+    The text will be spoken to the person on the phone within ~3 seconds.
+
     Body: {"text": "Sure, I can help you with that."}
     """
     text = body.get("text", "")
@@ -207,7 +199,6 @@ async def hangup_call(
     Hang up / terminate an active call.
 
     The agent calls this endpoint to programmatically end the call.
-    Works for both Plivo and SignalWire calls.
     """
     call = await db.fetchrow(
         "SELECT * FROM calls WHERE id=$1 AND account_id=$2",

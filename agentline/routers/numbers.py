@@ -1,7 +1,6 @@
 """
 AgentLine — Numbers Router
 Phone number provisioning, listing, attachment, and reassignment.
-Uses Plivo (IN) and SignalWire (US) for multi-provider number management.
 """
 
 import secrets
@@ -37,19 +36,17 @@ async def provision(
     db=Depends(get_db),
 ):
     """
-    Search for and buy a phone number, then attach it to an agent.
-    Only SignalWire (US) numbers are supported.
-    Each agent can only have ONE active number.
+    Search for and buy a US phone number, then attach it to an agent.
+    Each agent can only have ONE active number. Costs $2.00 per number.
 
     Request body:
       - agent_id: str (required)
       - country: str (must be "US")
       - number_type: "local" | "tollfree"
       - area_code: preferred 3-digit US area code (e.g. "212" for NYC)
-      - pattern: legacy loose digit match (prefer area_code)
     """
     if body.country.upper() != "US":
-        raise HTTPException(400, "Only US numbers via SignalWire are supported.")
+        raise HTTPException(400, "Only US numbers are supported.")
 
     # Verify agent belongs to this account
     agent = await db.fetchrow(

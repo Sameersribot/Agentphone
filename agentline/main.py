@@ -125,7 +125,6 @@ async def root():
         "service": "AgentLine",
         "version": "0.2.0",
         "status": "operational",
-        "telephony_providers": ["signalwire"],
         "mcp_endpoint": "/mcp",
     }
 
@@ -180,20 +179,42 @@ mcp = FastApiMCP(
     name="AgentLine",
     description=(
         "AI telephony platform — make phone calls, manage agents, "
-        "provision numbers, send SMS, check billing, and poll events. "
+        "provision numbers, view messages, check billing, and poll events. "
         "Requires Authorization: Bearer sk_live_xxx header."
     ),
-    # Exclude internal provider webhooks and debug/health endpoints
+    # Exclude internal webhooks, health/debug endpoints, and tools
+    # not documented in the public skill (SKILL.md).
     exclude_operations=[
+        # ── Internal provider webhooks ──
         "signalwire_answer",
         "signalwire_stream",
         "signalwire_hangup",
         "signalwire_inbound_call",
         "signalwire_inbound_hangup",
         "signalwire_sms_callback",
+        # ── Health / debug ──
         "health_check",
         "health_status",
         "debug_callback_urls",
+        # ── SMS: sending is not enabled ──
+        "send_sms",
+        "list_conversations",
+        # ── Relay-mode call tools (hosted mode only) ──
+        "speak_on_call",
+        "listen_to_call",
+        # ── Billing: only balance + expenditure exposed ──
+        "get_usage_stats",
+        "get_usage_balance",
+        "get_billing_transactions",
+        "get_spending_summary",
+        "get_call_charges",
+        "get_number_charges",
+        "verify_call_billing",
+        # ── Admin / internal tools ──
+        "topup_balance",
+        "attach_existing_number",
+        "reassign_number",
+        "get_phone_number",
     ],
 )
 mcp.mount_http(mount_path="/mcp")

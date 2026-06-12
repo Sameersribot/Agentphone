@@ -423,4 +423,7 @@ async def run_pipeline(
         except Exception as e:
             logger.warning("Failed to save final transcript for call %s: %s", call_id, e)
 
-        logger.info("Pipeline finished for call %s — %d turns", call_id, len(transcript_turns))
+        logger.info(
+            "Pipeline finished for call %s — %d turns",
+            call_id, len(transcript_turns),
+        )

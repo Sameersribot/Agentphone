@@ -205,7 +205,7 @@ Priority (highest wins): per-call → per-agent → per-account
 - **List voices:** `GET /v1/voices`
 - **Set account default:** `PATCH /v1/account/voice` with `{"voice_id": "female-1"}`
 - **Check current:** `GET /v1/account/voice`
-- **Reset to default:** `DELETE /v1/account/voice`
+- **Reset to default:** `DELETE /v1/account/voice` — resets to system default (`male-1`)
 
 ---
 
@@ -236,9 +236,6 @@ If no numbers are available for the requested area code, the API returns an erro
 
 - **Check balance:** `GET /v1/billing/balance`
 - **Expenditure:** `GET /v1/billing/expenditure?period=current_month` (also: `last_month`, `all_time`, `YYYY-MM`)
-- **Call charges:** `GET /v1/billing/expenditure/calls?limit=10`
-- **Number charges:** `GET /v1/billing/expenditure/numbers`
-- **Verify charge:** `GET /v1/billing/verify/<call_id>`
 
 ### Rates
 
