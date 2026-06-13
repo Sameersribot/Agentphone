@@ -36,10 +36,12 @@ async def get_balance(
     db=Depends(get_db),
 ):
     """
-    Get the current account balance along with rate card.
+    Get your AI telephony account balance and rate card.
 
-    Returns the live balance, currency, and current billing rates
-    so callers can estimate how many minutes/numbers they can afford.
+    Returns the current balance, currency, billing rates for calls
+    and phone numbers, and how many call minutes or phone numbers
+    the balance can cover. Use this to check affordability before
+    making calls or buying numbers for your AI agents.
     """
     row = await db.fetchrow(
         "SELECT balance, created_at FROM accounts WHERE id = $1",
@@ -84,10 +86,12 @@ async def get_expenditure(
     db=Depends(get_db),
 ):
     """
-    Get a detailed expenditure breakdown for the given period.
+    Get a detailed expenditure breakdown for AI telephony usage.
 
-    Shows total spend split by category (calls, numbers, top-ups, refunds)
-    with counts and averages for each.
+    Shows total spend split by category (voice calls, phone number
+    provisioning, top-ups, refunds) with counts and averages.
+    Useful for tracking how much your AI agents are spending on
+    phone calls and phone numbers.
     """
     date_filter, date_params = _build_date_filter(period)
 
@@ -174,10 +178,11 @@ async def get_call_expenditure(
     db=Depends(get_db),
 ):
     """
-    List individual call charges with call details.
+    List individual call charges from AI agent phone calls.
 
-    Each entry includes the call duration, cost, direction,
-    phone numbers involved, and timestamp.
+    Each entry includes the voice call duration, cost, direction
+    (inbound/outbound), phone numbers involved, and timestamp.
+    Shows exactly how much each AI agent call cost.
     """
     rows = await db.fetch(
         """SELECT
@@ -240,7 +245,8 @@ async def get_number_expenditure(
     """
     List phone number provisioning charges.
 
-    Each entry includes the number, country, and cost.
+    Shows the cost of each phone number bought for your AI agents,
+    including the number, country, and current status.
     """
     rows = await db.fetch(
         """SELECT

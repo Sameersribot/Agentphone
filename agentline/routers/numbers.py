@@ -36,14 +36,19 @@ async def provision(
     db=Depends(get_db),
 ):
     """
-    Search for and buy a US phone number, then attach it to an agent.
-    Each agent can only have ONE active number. Costs $2.00 per number.
+    Buy a US phone number for your AI agent.
+
+    Searches for and purchases a real US phone number from the telephony
+    provider, then attaches it to the specified AI agent. Once attached,
+    the agent can make outbound calls and receive inbound calls on this number.
+
+    Each AI agent can only have ONE active phone number. Costs $2.00 per number.
 
     Request body:
-      - agent_id: str (required)
+      - agent_id: str (required) — the AI agent to assign this number to
       - country: str (must be "US")
       - number_type: "local" | "tollfree"
-      - area_code: preferred 3-digit US area code (e.g. "212" for NYC)
+      - area_code: preferred 3-digit US area code (e.g. "212" for NYC, "415" for SF)
     """
     if body.country.upper() != "US":
         raise HTTPException(400, "Only US numbers are supported.")
@@ -160,7 +165,13 @@ async def list_numbers(
     account=Depends(get_current_account),
     db=Depends(get_db),
 ):
-    """List all phone numbers for the authenticated account."""
+    """
+    List all phone numbers provisioned on your account.
+
+    Returns every phone number you've bought for your AI agents,
+    including which agent each number is assigned to, the number's
+    status (active/released), and country.
+    """
     rows = await db.fetch(
         """SELECT * FROM phone_numbers
            WHERE account_id = $1
@@ -176,7 +187,12 @@ async def get_number(
     account=Depends(get_current_account),
     db=Depends(get_db),
 ):
-    """Get details of a specific phone number."""
+    """
+    Get details of a specific phone number.
+
+    Returns the phone number, its assigned AI agent, provider ID,
+    country, and current status.
+    """
     row = await db.fetchrow(
         "SELECT * FROM phone_numbers WHERE id = $1 AND account_id = $2",
         number_id,
@@ -297,7 +313,13 @@ async def reassign_number(
     account=Depends(get_current_account),
     db=Depends(get_db),
 ):
-    """Reassign a phone number to a different agent (if target agent has no number)."""
+    """
+    Reassign a phone number to a different AI agent.
+
+    Moves an existing phone number from one AI agent to another.
+    The target agent must not already have an active number assigned.
+    The phone number remains active — only the agent ownership changes.
+    """
     number = await db.fetchrow(
         "SELECT * FROM phone_numbers WHERE id = $1 AND account_id = $2",
         number_id,

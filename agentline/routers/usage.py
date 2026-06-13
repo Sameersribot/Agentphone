@@ -23,7 +23,14 @@ async def get_usage(
     account=Depends(get_current_account),
     db=Depends(get_db),
 ):
-    """Get usage statistics for the current billing period."""
+    """
+    Get usage statistics for your AI telephony account.
+
+    Returns a summary of call volume, message counts, active phone
+    numbers, current balance, and estimated costs for the billing period.
+    Use this to monitor how actively your AI agents are using the
+    telephony platform.
+    """
     # Count calls
     call_stats = await db.fetchrow(
         """SELECT
@@ -85,7 +92,12 @@ async def get_balance(
     account=Depends(get_current_account),
     db=Depends(get_db),
 ):
-    """Get the current account balance."""
+    """
+    Get the current AI telephony account balance.
+
+    Returns your available balance in USD. This balance is used to
+    pay for AI agent phone calls and phone number provisioning.
+    """
     balance = await db.fetchval(
         "SELECT balance FROM accounts WHERE id = $1", account["id"]
     )
@@ -104,7 +116,13 @@ async def get_transactions(
     account=Depends(get_current_account),
     db=Depends(get_db),
 ):
-    """Get billing transaction history (most recent first)."""
+    """
+    Get billing transaction history for your AI telephony account.
+
+    Returns a paginated list of all charges and credits including
+    call charges, number provisioning fees, top-ups, and refunds.
+    Most recent transactions are returned first.
+    """
     conditions = ["account_id = $1"]
     params: list = [account["id"]]
     idx = 2

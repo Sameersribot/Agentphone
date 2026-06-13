@@ -91,8 +91,13 @@ async def _reconfigure_number_callbacks():
 
 
 app = FastAPI(
-    title="AgentLine",
-    description="AI-native telephony platform — give your agent a phone number, voice, and SMS.",
+    title="AgentLine — Phone Number for AI Agents",
+    description=(
+        "AI-native telephony platform that gives your AI agent a real phone number, "
+        "a human-like voice, and the ability to make and receive phone calls autonomously. "
+        "Build AI phone agents, automated outbound calling systems, AI receptionists, "
+        "and conversational voice AI assistants over real phone lines."
+    ),
     version="0.2.0",
     lifespan=lifespan,
 )
@@ -178,10 +183,21 @@ mcp = FastApiMCP(
     app,
     name="AgentLine",
     description=(
-        "AI telephony platform — make phone calls, manage agents, "
-        "provision numbers, view messages, check billing, and poll events. "
+        "AgentLine — Phone number for AI agents | Telephony for AI agents. "
+        "A complete AI-native telephony platform that gives your AI agent "
+        "a real phone number, a human-like voice, and the ability to make "
+        "and receive phone calls autonomously. "
+        "Capabilities: buy and manage US phone numbers, create and configure "
+        "voice AI agents with custom system prompts, initiate outbound voice "
+        "calls, handle inbound calls automatically, retrieve call transcripts, "
+        "manage billing and usage, set voice preferences (TTS), and poll for "
+        "real-time call events. "
+        "Use cases: AI phone agents, automated outbound calling, AI receptionist, "
+        "voice AI assistants, phone-based customer support bots, "
+        "conversational AI over the phone, and programmable telephony for LLMs. "
         "Requires Authorization: Bearer sk_live_xxx header."
     ),
+    describe_full_response_schema=True,
     # Exclude internal webhooks, health/debug endpoints, and tools
     # not documented in the public skill (SKILL.md).
     exclude_operations=[

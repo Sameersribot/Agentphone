@@ -33,10 +33,23 @@ async def create_call(
     db=Depends(get_db),
 ):
     """
-    Initiate an outbound voice call.
-    
-    The call will ring the person, speak the agent's greeting,
-    then wait for speech. Use /listen and /speak to interact.
+    Make an outbound phone call from your AI agent.
+
+    Initiates a real phone call from the AI agent's phone number to the
+    specified destination. The agent uses its configured system prompt,
+    voice, and greeting to conduct the conversation autonomously.
+
+    The AI agent handles the entire call — speech-to-text, LLM reasoning,
+    and text-to-speech — in real time. The call transcript is saved
+    automatically and can be retrieved via GET /v1/calls/{call_id}/transcript.
+
+    Request body:
+      - agent_id: the AI agent making the call
+      - to_number: destination phone number in E.164 format (e.g. "+12125551234")
+      - from_number_id: (optional) specific number to call from
+      - system_prompt: (optional) override the agent's default prompt for this call
+      - initial_greeting: (optional) override the agent's greeting for this call
+      - voice_id: (optional) override the voice for this call
     """
     agent = await db.fetchrow(
         "SELECT * FROM agents WHERE id = $1 AND account_id = $2",
@@ -112,7 +125,17 @@ async def list_calls(
     limit: int = 50, offset: int = 0,
     account=Depends(get_current_account), db=Depends(get_db),
 ):
-    """List calls with optional filters."""
+    """
+    List voice calls made by your AI agents.
+
+    Returns call history with optional filters by agent or status.
+    Each entry includes direction (inbound/outbound), duration,
+    phone numbers, and current status.
+
+    Filters:
+      - agent_id: only calls for a specific AI agent
+      - status: "initiated", "in-progress", "completed", or "failed"
+    """
     conditions = ["account_id = $1"]
     params: list = [account["id"]]
     idx = 2
@@ -131,7 +154,13 @@ async def list_calls(
 
 @router.get("/{call_id}", operation_id="get_call_details")
 async def get_call(call_id: str, account=Depends(get_current_account), db=Depends(get_db)):
-    """Get call details including transcript."""
+    """
+    Get full details of a specific voice call.
+
+    Returns the call's metadata including direction, phone numbers,
+    status, duration, AI agent configuration used, and the full
+    conversation transcript between the AI agent and the caller.
+    """
     row = await db.fetchrow(
         "SELECT * FROM calls WHERE id=$1 AND account_id=$2", call_id, account["id"],
     )
@@ -142,7 +171,14 @@ async def get_call(call_id: str, account=Depends(get_current_account), db=Depend
 
 @router.get("/{call_id}/transcript", operation_id="get_call_transcript")
 async def get_transcript(call_id: str, account=Depends(get_current_account), db=Depends(get_db)):
-    """Get the full transcript for a call."""
+    """
+    Get the full conversation transcript for a call.
+
+    Returns the complete speech-to-text transcript of the phone call,
+    with each turn labeled by role ("human" for the caller, "assistant"
+    for the AI agent). Useful for reviewing what was said on the call,
+    extracting information, or auditing AI agent behavior.
+    """
     row = await db.fetchrow(
         "SELECT transcript, status FROM calls WHERE id=$1 AND account_id=$2",
         call_id, account["id"],
@@ -196,9 +232,12 @@ async def hangup_call(
     db=Depends(get_db),
 ):
     """
-    Hang up / terminate an active call.
+    Hang up an active phone call.
 
-    The agent calls this endpoint to programmatically end the call.
+    Programmatically terminates an in-progress voice call. Use this
+    when the AI agent needs to end the conversation, or to force-stop
+    a call that is no longer needed. The call's final transcript and
+    billing are processed automatically after hangup.
     """
     call = await db.fetchrow(
         "SELECT * FROM calls WHERE id=$1 AND account_id=$2",

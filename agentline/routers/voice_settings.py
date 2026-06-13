@@ -42,11 +42,14 @@ class VoiceSettingOut(BaseModel):
 @router.get("/v1/voices", operation_id="list_available_voices")
 async def get_available_voices():
     """
-    List all available voice presets.
+    List all available voice presets for AI phone agents.
 
-    Returns named presets that can be used as `voice_id` in agent
-    configuration or per-call overrides. You can also pass any
-    valid Cartesia voice UUID directly.
+    Returns named TTS (text-to-speech) voice presets that can be used
+    when configuring AI agents or making phone calls. Each voice defines
+    how your AI agent sounds on the phone.
+
+    You can use a preset name (e.g. "female-1", "male-1") or pass any
+    valid Cartesia voice UUID directly as a voice_id.
     """
     return {
         "voices": list_available_voices(),
@@ -64,10 +67,11 @@ async def get_account_voice(
     db=Depends(get_db),
 ):
     """
-    Get the current account-level default voice setting.
+    Get the current account-level default voice for AI phone agents.
 
-    This voice is used for all agents under this account unless
-    overridden at the agent or per-call level.
+    Returns which voice is used for all AI agents under this account
+    unless overridden at the agent level or per-call. Controls how
+    your AI agents sound during phone conversations.
     """
     row = await db.fetchrow(
         "SELECT default_voice_id FROM accounts WHERE id = $1",
@@ -89,11 +93,11 @@ async def update_account_voice(
     db=Depends(get_db),
 ):
     """
-    Set the account-level default voice.
+    Set the account-level default voice for AI phone agents.
 
-    This becomes the default for ALL agents under this account,
-    unless an agent has its own voice_id set, or a specific call
-    overrides it.
+    This becomes the default voice for ALL AI agents under this account,
+    controlling how they sound on phone calls. Individual agents or
+    specific calls can still override this setting.
 
     Voice resolution priority:
       1. Per-call voice_id (POST /v1/calls)
@@ -134,8 +138,9 @@ async def reset_account_voice(
     """
     Reset account voice to the system default.
 
-    Removes the account-level override so all agents fall back to
-    the system default voice (unless they have their own voice_id set).
+    Removes the account-level voice override so all AI agents fall back
+    to the system default voice during phone calls (unless they have
+    their own voice_id configured).
     """
     await db.execute(
         "UPDATE accounts SET default_voice_id = NULL WHERE id = $1",

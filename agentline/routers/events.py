@@ -28,14 +28,17 @@ async def list_events(
     db=Depends(get_db),
 ):
     """
-    Poll for events (call completions, transcripts, etc.).
+    Poll for telephony events from your AI agents.
 
-    Events are returned oldest-first and auto-deleted after retrieval.
-    Your agent should call this endpoint periodically to receive
-    call transcripts and other notifications.
+    Returns pending events such as call completions, transcripts, and
+    failures. Events are consumed on retrieval (one-time read) — once
+    polled, they are automatically deleted from the mailbox.
+
+    Your AI agent should call this endpoint periodically to receive
+    notifications about completed calls and their transcripts.
 
     Filters:
-      - agent_id: only events for a specific agent
+      - agent_id: only events for a specific AI agent
       - event_type: e.g. "call.completed", "call.failed"
     """
     conditions = ["account_id = $1"]
@@ -105,8 +108,11 @@ async def peek_events(
     db=Depends(get_db),
 ):
     """
-    Peek at pending events WITHOUT consuming them.
-    Useful for checking if there are events before committing to process them.
+    Peek at pending telephony events without consuming them.
+
+    Returns a preview of queued events (call completions, transcripts)
+    without removing them from the mailbox. Useful for checking if
+    there are events to process before committing to retrieve them.
     """
     conditions = ["account_id = $1"]
     params: list = [account["id"]]

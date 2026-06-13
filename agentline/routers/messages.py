@@ -22,7 +22,7 @@ async def send_message(
     account=Depends(get_current_account),
     db=Depends(get_db),
 ):
-    """Send an outbound SMS from an agent's number."""
+    """Send an outbound SMS message from an AI agent's phone number."""
     # Get agent
     agent = await db.fetchrow(
         "SELECT * FROM agents WHERE id = $1 AND account_id = $2",
@@ -129,7 +129,13 @@ async def list_messages(
     account=Depends(get_current_account),
     db=Depends(get_db),
 ):
-    """List messages with optional agent/conversation filter."""
+    """
+    List SMS messages sent and received by your AI agents.
+
+    Returns message history with optional filters by AI agent or
+    conversation. Each entry includes direction (inbound/outbound),
+    phone numbers, message body, and delivery status.
+    """
     conditions = ["m.account_id = $1"]
     params = [account["id"]]
     idx = 2
@@ -163,7 +169,13 @@ async def list_conversations(
     account=Depends(get_current_account),
     db=Depends(get_db),
 ):
-    """List all conversations, optionally filtered by agent."""
+    """
+    List all SMS conversations for your AI agents.
+
+    Returns conversation threads, optionally filtered by AI agent.
+    Each conversation represents an ongoing SMS exchange between
+    an AI agent's phone number and an external contact.
+    """
     if agent_id:
         rows = await db.fetch(
             """SELECT * FROM conversations

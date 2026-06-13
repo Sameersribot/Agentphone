@@ -21,7 +21,22 @@ async def create_agent(
     account=Depends(get_current_account),
     db=Depends(get_db),
 ):
-    """Create a new agent under the authenticated account."""
+    """
+    Create a new AI voice agent for telephony.
+
+    Sets up a new AI phone agent with a custom system prompt, voice,
+    and greeting. Once created, buy a phone number and attach it to
+    this agent so it can make and receive calls autonomously.
+
+    Fields:
+      - name: Display name for the agent
+      - system_prompt: Instructions that define the agent's personality and behavior on calls
+      - initial_greeting: What the AI agent says when the call connects
+      - voice_id: TTS voice preset (e.g. "female-1") or Cartesia UUID
+      - model_tier: LLM model tier — "fast" (GPT-4o-mini) or "quality" (GPT-4o)
+      - transfer_number: Phone number to transfer calls to (e.g. a human operator)
+      - voicemail_message: Message the agent leaves if the call goes to voicemail
+    """
     agent_id = f"agt_{secrets.token_urlsafe(12)}"
     now = datetime.now(timezone.utc)
 
@@ -61,7 +76,13 @@ async def list_agents(
     account=Depends(get_current_account),
     db=Depends(get_db),
 ):
-    """List all agents for the authenticated account."""
+    """
+    List all AI voice agents configured on your account.
+
+    Returns every AI phone agent you've created, including their
+    system prompts, voice settings, and associated phone numbers.
+    Useful for checking which agents are ready to make or receive calls.
+    """
     rows = await db.fetch(
         "SELECT * FROM agents WHERE account_id = $1 ORDER BY created_at DESC",
         account["id"],
@@ -75,7 +96,12 @@ async def get_agent(
     account=Depends(get_current_account),
     db=Depends(get_db),
 ):
-    """Get a single agent by ID."""
+    """
+    Get details of a specific AI voice agent.
+
+    Returns the agent's full configuration including system prompt,
+    voice settings, greeting, model tier, and transfer number.
+    """
     row = await db.fetchrow(
         "SELECT * FROM agents WHERE id = $1 AND account_id = $2",
         agent_id,
@@ -93,7 +119,14 @@ async def update_agent(
     account=Depends(get_current_account),
     db=Depends(get_db),
 ):
-    """Update an agent's configuration."""
+    """
+    Update an AI voice agent's configuration.
+
+    Modify any combination of the agent's settings: system prompt,
+    voice, greeting, model tier, transfer number, or voicemail message.
+    Changes take effect on the next call the agent handles.
+    Only include the fields you want to change — unset fields are preserved.
+    """
     existing = await db.fetchrow(
         "SELECT * FROM agents WHERE id = $1 AND account_id = $2",
         agent_id,
@@ -131,7 +164,13 @@ async def delete_agent(
     account=Depends(get_current_account),
     db=Depends(get_db),
 ):
-    """Delete an agent and release its associated numbers."""
+    """
+    Delete an AI voice agent.
+
+    Permanently removes the agent and detaches any phone numbers
+    assigned to it. Detached numbers remain active on your account
+    and can be reassigned to another agent.
+    """
     existing = await db.fetchrow(
         "SELECT * FROM agents WHERE id = $1 AND account_id = $2",
         agent_id,
