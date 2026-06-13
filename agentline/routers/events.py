@@ -21,9 +21,9 @@ router = APIRouter(prefix="/v1/events", tags=["Events"])
 
 @router.get("", operation_id="poll_events")
 async def list_events(
-    agent_id: str | None = None,
-    event_type: str | None = None,
-    limit: int = Query(50, le=200),
+    agent_id: str | None = Query(None, description="Filter events by AI agent ID"),
+    event_type: str | None = Query(None, description="Filter by event type (e.g. 'call.completed', 'call.failed')"),
+    limit: int = Query(50, le=200, description="Maximum number of events to return (1-200)"),
     account=Depends(get_current_account),
     db=Depends(get_db),
 ):
@@ -102,8 +102,8 @@ async def list_events(
 
 @router.get("/peek", operation_id="peek_events")
 async def peek_events(
-    agent_id: str | None = None,
-    limit: int = Query(50, le=200),
+    agent_id: str | None = Query(None, description="Filter events by AI agent ID"),
+    limit: int = Query(50, le=200, description="Maximum number of events to preview (1-200)"),
     account=Depends(get_current_account),
     db=Depends(get_db),
 ):

@@ -121,8 +121,10 @@ async def create_call(
 
 @router.get("", operation_id="list_calls")
 async def list_calls(
-    agent_id: str | None = None, status: str | None = None,
-    limit: int = 50, offset: int = 0,
+    agent_id: str | None = Query(None, description="Filter calls by AI agent ID"),
+    status: str | None = Query(None, description="Filter by call status: 'initiated', 'in-progress', 'completed', or 'failed'"),
+    limit: int = Query(50, ge=1, le=200, description="Maximum number of calls to return (1-200)"),
+    offset: int = Query(0, ge=0, description="Number of calls to skip for pagination"),
     account=Depends(get_current_account), db=Depends(get_db),
 ):
     """

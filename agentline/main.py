@@ -178,6 +178,7 @@ async def debug_urls():
 # Access via: http://localhost:8000/mcp (or your deployed URL + /mcp)
 
 from fastapi_mcp import FastApiMCP
+from mcp import types as mcp_types
 
 mcp = FastApiMCP(
     app,
@@ -198,6 +199,7 @@ mcp = FastApiMCP(
         "Requires Authorization: Bearer sk_live_xxx header."
     ),
     describe_full_response_schema=True,
+    describe_all_responses=True,
     # Exclude internal webhooks, health/debug endpoints, and tools
     # not documented in the public skill (SKILL.md).
     exclude_operations=[
@@ -233,8 +235,128 @@ mcp = FastApiMCP(
         "get_phone_number",
     ],
 )
+
+# ── Patch MCP Server Metadata ──────────────────────────────────
+# FastApiMCP only sets name + description on the underlying Server.
+# We patch in version, instructions, and website_url for full metadata.
+try:
+    mcp.server.version = "0.2.0"
+    mcp.server.instructions = (
+        "AgentLine gives AI agents real phone numbers and human-like voices. "
+        "Start by creating an agent (create_agent), then buy a phone number "
+        "(buy_phone_number) to attach to it. The agent can then make outbound "
+        "calls (make_outbound_call) and receive inbound calls automatically. "
+        "Poll for events (poll_events) to get call completion notifications "
+        "and transcripts. Check your balance (get_account_balance) before "
+        "making calls or buying numbers."
+    )
+    mcp.server.website_url = "https://agentline.ai"
+except Exception as e:
+    logger.warning("Non-fatal: could not patch MCP server metadata: %s", e)
+
+# ── Add Tool Annotations ──────────────────────────────────────
+# MCP tool annotations tell clients whether tools are read-only,
+# destructive, idempotent, etc. — improving quality scores.
+_TOOL_ANNOTATIONS = {
+    # Agents
+    "create_agent": mcp_types.ToolAnnotations(
+        title="Create AI Voice Agent",
+        readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False,
+    ),
+    "list_agents": mcp_types.ToolAnnotations(
+        title="List AI Voice Agents",
+        readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False,
+    ),
+    "get_agent": mcp_types.ToolAnnotations(
+        title="Get AI Voice Agent Details",
+        readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False,
+    ),
+    "update_agent": mcp_types.ToolAnnotations(
+        title="Update AI Voice Agent",
+        readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False,
+    ),
+    "delete_agent": mcp_types.ToolAnnotations(
+        title="Delete AI Voice Agent",
+        readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False,
+    ),
+    # Numbers
+    "buy_phone_number": mcp_types.ToolAnnotations(
+        title="Buy Phone Number for AI Agent",
+        readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True,
+    ),
+    "list_phone_numbers": mcp_types.ToolAnnotations(
+        title="List Phone Numbers",
+        readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False,
+    ),
+    # Calls
+    "make_outbound_call": mcp_types.ToolAnnotations(
+        title="Make Outbound Phone Call",
+        readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True,
+    ),
+    "list_calls": mcp_types.ToolAnnotations(
+        title="List Voice Calls",
+        readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False,
+    ),
+    "get_call_details": mcp_types.ToolAnnotations(
+        title="Get Call Details",
+        readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False,
+    ),
+    "get_call_transcript": mcp_types.ToolAnnotations(
+        title="Get Call Transcript",
+        readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False,
+    ),
+    "hangup_call": mcp_types.ToolAnnotations(
+        title="Hang Up Phone Call",
+        readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=True,
+    ),
+    # Messages
+    "list_messages": mcp_types.ToolAnnotations(
+        title="List SMS Messages",
+        readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False,
+    ),
+    # Events
+    "poll_events": mcp_types.ToolAnnotations(
+        title="Poll Telephony Events",
+        readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False,
+    ),
+    "peek_events": mcp_types.ToolAnnotations(
+        title="Peek at Pending Events",
+        readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False,
+    ),
+    # Billing
+    "get_account_balance": mcp_types.ToolAnnotations(
+        title="Get Account Balance",
+        readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False,
+    ),
+    "get_expenditure_breakdown": mcp_types.ToolAnnotations(
+        title="Get Expenditure Breakdown",
+        readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False,
+    ),
+    # Voice
+    "list_available_voices": mcp_types.ToolAnnotations(
+        title="List Available Voices",
+        readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False,
+    ),
+    "get_account_voice": mcp_types.ToolAnnotations(
+        title="Get Account Voice Setting",
+        readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False,
+    ),
+    "set_account_voice": mcp_types.ToolAnnotations(
+        title="Set Account Voice",
+        readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False,
+    ),
+    "reset_account_voice": mcp_types.ToolAnnotations(
+        title="Reset Account Voice to Default",
+        readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False,
+    ),
+}
+
+# Apply annotations to each tool
+for tool in mcp.tools:
+    if tool.name in _TOOL_ANNOTATIONS:
+        tool.annotations = _TOOL_ANNOTATIONS[tool.name]
+
 mcp.mount_http(mount_path="/mcp")
 
-logger.info("MCP server mounted at /mcp")
-
+logger.info("MCP server mounted at /mcp with %d tools", len(mcp.tools))
 

@@ -7,7 +7,7 @@ and listing available voice presets.
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from agentline.auth_middleware import get_current_account
 from agentline.database import get_db
@@ -27,7 +27,7 @@ router = APIRouter(tags=["Voice"])
 
 class VoiceSettingUpdate(BaseModel):
     """Set account-level default voice."""
-    voice_id: str  # Cartesia UUID or preset name (e.g. "female-1")
+    voice_id: str = Field(description="TTS voice preset name (e.g. 'female-1', 'male-1') or Cartesia voice UUID")
 
 
 class VoiceSettingOut(BaseModel):

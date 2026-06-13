@@ -6,7 +6,7 @@ Send and list SMS messages, manage conversations.
 import secrets
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from agentline.auth_middleware import get_current_account
 from agentline.database import get_db
@@ -122,10 +122,10 @@ async def send_message(
 
 @router.get("", operation_id="list_messages")
 async def list_messages(
-    agent_id: str | None = None,
-    conversation_id: str | None = None,
-    limit: int = 50,
-    offset: int = 0,
+    agent_id: str | None = Query(None, description="Filter messages by AI agent ID"),
+    conversation_id: str | None = Query(None, description="Filter messages by conversation thread ID"),
+    limit: int = Query(50, ge=1, le=200, description="Maximum number of messages to return (1-200)"),
+    offset: int = Query(0, ge=0, description="Number of messages to skip for pagination"),
     account=Depends(get_current_account),
     db=Depends(get_db),
 ):

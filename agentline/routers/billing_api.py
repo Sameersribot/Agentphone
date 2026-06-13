@@ -172,8 +172,8 @@ async def get_expenditure(
 
 @router.get("/expenditure/calls", operation_id="get_call_charges")
 async def get_call_expenditure(
-    limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200, description="Maximum number of call charges to return (1-200)"),
+    offset: int = Query(0, ge=0, description="Number of records to skip for pagination"),
     account=Depends(get_current_account),
     db=Depends(get_db),
 ):
@@ -237,8 +237,8 @@ async def get_call_expenditure(
 
 @router.get("/expenditure/numbers", operation_id="get_number_charges")
 async def get_number_expenditure(
-    limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200, description="Maximum number of number charges to return (1-200)"),
+    offset: int = Query(0, ge=0, description="Number of records to skip for pagination"),
     account=Depends(get_current_account),
     db=Depends(get_db),
 ):

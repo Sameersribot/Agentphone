@@ -19,7 +19,7 @@ router = APIRouter(prefix="/v1/usage", tags=["Usage"])
 
 @router.get("", operation_id="get_usage_stats")
 async def get_usage(
-    period: str = "current_month",
+    period: str = Query("current_month", description="Billing period: 'current_month', 'last_month', 'all_time', or 'YYYY-MM'"),
     account=Depends(get_current_account),
     db=Depends(get_db),
 ):
@@ -110,9 +110,9 @@ async def get_balance(
 
 @router.get("/transactions", operation_id="get_billing_transactions")
 async def get_transactions(
-    limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
-    txn_type: str | None = Query(None, description="Filter by type: call_charge, number_provision, topup, refund"),
+    limit: int = Query(50, ge=1, le=200, description="Maximum number of transactions to return (1-200)"),
+    offset: int = Query(0, ge=0, description="Number of transactions to skip for pagination"),
+    txn_type: str | None = Query(None, description="Filter by transaction type: 'call_charge', 'number_provision', 'topup', or 'refund'"),
     account=Depends(get_current_account),
     db=Depends(get_db),
 ):
