@@ -43,6 +43,11 @@ logger = logging.getLogger(__name__)
 # window the timer is cancelled and the new words are appended.
 DEBOUNCE_SECONDS = 0.9
 
+# Minimum number of audio chunks the agent must play before barge-in
+# is honoured.  Prevents the agent from being cut off by echo/noise
+# in the first ~100ms of playback.
+MIN_CHUNKS_BEFORE_BARGEIN = 3
+
 # Common filler words/sounds.  If an entire speech_final segment contains
 # ONLY these tokens we skip it and keep buffering — the user is thinking,
 # not finished.
@@ -93,6 +98,15 @@ async def _send_audio_signalwire(ws, audio_bytes: bytes, stream_sid: str):
     logger.debug("Sent %d bytes audio to SignalWire (streamSid: %s)", len(audio_bytes), stream_sid[:8])
 
 
+async def _clear_audio_signalwire(ws, stream_sid: str):
+    """Tell SignalWire to flush its audio buffer so the caller stops hearing the agent immediately."""
+    try:
+        await ws.send_json({"event": "clear", "streamSid": stream_sid})
+        logger.debug("Sent clear event to SignalWire (streamSid: %s)", stream_sid[:8])
+    except Exception as e:
+        logger.warning("Failed to send clear event: %s", e)
+
+
 async def _send_audio_plivo(ws, audio_bytes: bytes, _stream_sid: str = ""):
     """Send audio back to caller via Plivo bidirectional WebSocket."""
     if not audio_bytes:
@@ -104,10 +118,25 @@ async def _send_audio_plivo(ws, audio_bytes: bytes, _stream_sid: str = ""):
     })
 
 
+async def _clear_audio_plivo(ws, _stream_sid: str = ""):
+    """Tell Plivo to flush its audio buffer."""
+    try:
+        await ws.send_json({"event": "clearAudio"})
+        logger.debug("Sent clearAudio event to Plivo")
+    except Exception as e:
+        logger.warning("Failed to send clearAudio event: %s", e)
+
+
 # Provider send function registry
 PROVIDER_SEND = {
     "signalwire": _send_audio_signalwire,
     "plivo": _send_audio_plivo,
+}
+
+# Provider clear function registry
+PROVIDER_CLEAR = {
+    "signalwire": _clear_audio_signalwire,
+    "plivo": _clear_audio_plivo,
 }
 
 
@@ -135,12 +164,18 @@ async def run_pipeline(
     """
     voice_id = resolve_voice_id(voice_id)
     send_audio = PROVIDER_SEND.get(provider, _send_audio_signalwire)
+    clear_audio = PROVIDER_CLEAR.get(provider, _clear_audio_signalwire)
 
     conversation_history: list[dict] = []
     transcript_turns: list[dict] = []
     stream_sid = ""  # Set when we receive the 'start' event with metadata
     greeting_sent = False
     pending_response_task: asyncio.Task | None = None  # debounce handle
+
+    # Barge-in signal: set when the user starts speaking while agent is playing.
+    # Checked between audio chunks — no latency overhead, just an Event.is_set() check.
+    barge_in = asyncio.Event()
+    agent_speaking = False  # True while we're actively flushing audio to the caller
 
     # Set up Deepgram streaming STT
     dg_connection = create_deepgram_connection()
@@ -214,10 +249,21 @@ async def run_pipeline(
             })
             asyncio.create_task(_save_transcript(call_id, list(transcript_turns)))
 
-            # ── Phase 2: Flush buffered audio ─────────────────────
+            # ── Phase 2: Flush buffered audio (with barge-in check) ─
+            nonlocal agent_speaking
+            agent_speaking = True
+            barge_in.clear()  # reset from any previous turn
             reply_parts: list[str] = []
             last_sentence = None
+            barged = False
+            chunks_sent = 0
             while True:
+                # Check barge-in between every chunk — near-zero cost
+                if chunks_sent >= MIN_CHUNKS_BEFORE_BARGEIN and barge_in.is_set():
+                    logger.info("Call %s — barge-in detected, stopping playback", call_id)
+                    barged = True
+                    break
+
                 item = await audio_queue.get()
                 if item is None:  # sentinel — generation done
                     break
@@ -229,8 +275,33 @@ async def run_pipeline(
                     logger.debug("Call %s — flushing sentence: %s", call_id, sentence[:80])
                 try:
                     await send_audio(provider_ws, audio, stream_sid)
+                    chunks_sent += 1
                 except Exception as e:
                     logger.error("Call %s — send audio failed: %s", call_id, e)
+
+            agent_speaking = False
+
+            if barged:
+                # Stop LLM+TTS generation and flush the provider's audio buffer
+                gen_task.cancel()
+                try:
+                    await gen_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                await clear_audio(provider_ws, stream_sid)
+
+                # Commit the partial reply so far (what the user actually heard)
+                partial_reply = " ".join(reply_parts)
+                if partial_reply:
+                    conversation_history.append({"role": "assistant", "content": partial_reply})
+                    transcript_turns.append({
+                        "role": "agent",
+                        "text": partial_reply + " [interrupted]",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    })
+                    asyncio.create_task(_save_transcript(call_id, list(transcript_turns)))
+                logger.info("Call %s — Agent (interrupted): %s", call_id, partial_reply[:100] if partial_reply else "<none>")
+                return  # exit — on_transcript will handle the new user speech
 
             await gen_task  # ensure clean completion
 
@@ -247,7 +318,8 @@ async def run_pipeline(
             asyncio.create_task(_save_transcript(call_id, list(transcript_turns)))
 
         except asyncio.CancelledError:
-            # User resumed speaking — discard speculative work
+            # User resumed speaking during debounce — discard speculative work
+            agent_speaking = False
             gen_task.cancel()
             try:
                 await gen_task
@@ -279,6 +351,11 @@ async def run_pipeline(
             if pending_response_task and not pending_response_task.done():
                 pending_response_task.cancel()
                 pending_response_task = None
+
+            # Signal barge-in if agent is currently playing audio
+            if agent_speaking:
+                barge_in.set()
+
             utterance_buffer.append(sentence)
 
         if result.speech_final:
@@ -314,6 +391,16 @@ async def run_pipeline(
     async def on_dg_close(self, *args, **kwargs):
         logger.info("Call %s — Deepgram WebSocket CLOSED", call_id)
 
+    async def on_speech_started(self, speech_started, **kwargs):
+        """Deepgram detected the start of speech — trigger barge-in if agent is talking.
+
+        This fires the instant Deepgram's VAD detects voice energy, BEFORE any
+        transcript is produced.  Much faster than waiting for on_transcript.
+        """
+        if agent_speaking:
+            barge_in.set()
+            logger.debug("Call %s — SpeechStarted: barge-in signalled", call_id)
+
     async def on_utterance_end(self, utterance_end, **kwargs):
         nonlocal pending_response_task
         logger.info("Call %s — Deepgram UtteranceEnd event (buffer: %s)", call_id, utterance_buffer)
@@ -336,6 +423,7 @@ async def run_pipeline(
     dg_connection.on(LiveTranscriptionEvents.Open, on_dg_open)
     dg_connection.on(LiveTranscriptionEvents.Error, on_dg_error)
     dg_connection.on(LiveTranscriptionEvents.Close, on_dg_close)
+    dg_connection.on(LiveTranscriptionEvents.SpeechStarted, on_speech_started)
     dg_connection.on(LiveTranscriptionEvents.UtteranceEnd, on_utterance_end)
     dg_connection.on(LiveTranscriptionEvents.Transcript, on_transcript)
     options = get_stt_options()
