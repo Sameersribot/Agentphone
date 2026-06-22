@@ -32,7 +32,7 @@ from agentline.config import settings
 from agentline.database import get_db_conn
 from agentline.voice.stt import create_deepgram_connection, get_stt_options
 from agentline.voice.llm import llm_response_stream
-from agentline.voice.tts import tts_cartesia
+from agentline.voice.tts import tts_cartesia, tts_cartesia_stream
 from agentline.voice.voices import resolve_voice_id, DEFAULT_VOICE_ID
 
 logger = logging.getLogger(__name__)
@@ -59,6 +59,20 @@ def _is_only_filler(text: str) -> bool:
     """Return True if *text* consists entirely of filler words/sounds."""
     words = text.lower().strip().split()
     return len(words) > 0 and all(w in FILLER_WORDS for w in words)
+
+
+# ── Fire-and-forget DB write ─────────────────────────────────────
+
+async def _save_transcript(call_id: str, turns: list[dict]):
+    """Persist transcript in background — runs off the audio hot path."""
+    try:
+        async with get_db_conn() as db:
+            await db.execute(
+                "UPDATE calls SET transcript=$1 WHERE id=$2",
+                json.dumps(turns), call_id,
+            )
+    except Exception as e:
+        logger.warning("Failed to save transcript for call %s: %s", call_id, e)
 
 
 # ── Provider-specific audio send helpers ──────────────────────────
@@ -139,8 +153,9 @@ async def run_pipeline(
     ):
         """Stream LLM → TTS, buffering audio into *audio_queue*.
 
-        Runs concurrently with the debounce timer so audio is ready
-        the instant the debounce expires.  A ``None`` sentinel is put
+        Uses WebSocket streaming TTS so audio chunks arrive as they're
+        synthesized.  Each chunk is queued individually for near-instant
+        playback once the debounce expires.  A ``None`` sentinel is put
         into the queue when generation finishes (or on error).
         """
         try:
@@ -148,8 +163,8 @@ async def run_pipeline(
                 system_prompt, conversation_history, model_tier
             ):
                 try:
-                    audio = await tts_cartesia(sentence, voice_id)
-                    await audio_queue.put((audio, sentence))
+                    async for audio_chunk in tts_cartesia_stream(sentence, voice_id):
+                        await audio_queue.put((audio_chunk, sentence))
                 except Exception as e:
                     logger.error("Call %s — TTS failed during speculative gen: %s", call_id, e)
         except asyncio.CancelledError:
@@ -197,24 +212,21 @@ async def run_pipeline(
                 "text": utterance,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             })
-            try:
-                async with get_db_conn() as db:
-                    await db.execute(
-                        "UPDATE calls SET transcript=$1 WHERE id=$2",
-                        json.dumps(transcript_turns), call_id,
-                    )
-            except Exception as e:
-                logger.warning("Failed to save transcript for call %s: %s", call_id, e)
+            asyncio.create_task(_save_transcript(call_id, list(transcript_turns)))
 
             # ── Phase 2: Flush buffered audio ─────────────────────
             reply_parts: list[str] = []
+            last_sentence = None
             while True:
                 item = await audio_queue.get()
                 if item is None:  # sentinel — generation done
                     break
                 audio, sentence = item
-                reply_parts.append(sentence)
-                logger.debug("Call %s — flushing sentence: %s", call_id, sentence[:80])
+                # Only record each sentence text once (multiple chunks per sentence)
+                if sentence != last_sentence:
+                    reply_parts.append(sentence)
+                    last_sentence = sentence
+                    logger.debug("Call %s — flushing sentence: %s", call_id, sentence[:80])
                 try:
                     await send_audio(provider_ws, audio, stream_sid)
                 except Exception as e:
@@ -232,14 +244,7 @@ async def run_pipeline(
                 "text": full_reply,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             })
-            try:
-                async with get_db_conn() as db:
-                    await db.execute(
-                        "UPDATE calls SET transcript=$1 WHERE id=$2",
-                        json.dumps(transcript_turns), call_id,
-                    )
-            except Exception as e:
-                logger.warning("Failed to save transcript for call %s: %s", call_id, e)
+            asyncio.create_task(_save_transcript(call_id, list(transcript_turns)))
 
         except asyncio.CancelledError:
             # User resumed speaking — discard speculative work

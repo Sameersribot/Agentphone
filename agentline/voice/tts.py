@@ -1,12 +1,21 @@
 """
-AgentLine — Cartesia Streaming TTS
+AgentLine — Cartesia TTS (Streaming + HTTP Fallback)
 Text-to-speech using Cartesia's Sonic model, outputting mulaw 8kHz for telephony.
 
-Uses Sonic 3.5 (latest) with pcm_mulaw encoding for direct telephony compatibility.
+Two modes:
+  1. WebSocket streaming (primary) — yields audio chunks as they're synthesized,
+     dramatically reducing time-to-first-audio.  Uses the official Cartesia SDK.
+  2. HTTP bytes (fallback) — returns the full audio blob in one shot.
+     Used for greetings and when the WebSocket connection fails.
 """
 
+import asyncio
 import logging
+from typing import AsyncGenerator
+
 import httpx
+from cartesia import AsyncCartesia
+
 from agentline.config import settings
 
 logger = logging.getLogger(__name__)
@@ -17,10 +26,122 @@ CARTESIA_API_VERSION = "2026-03-01"
 # Model — sonic-3.5 is the latest stable model
 CARTESIA_MODEL = "sonic-3.5"
 
-# ── Persistent HTTP client ────────────────────────────────────────
-# Reuses TCP + TLS connections across calls.  Eliminates ~300-500ms
-# handshake overhead that the old `async with httpx.AsyncClient()` pattern
-# paid on every single TTS invocation.
+# Output format for telephony (mulaw 8kHz mono)
+_OUTPUT_FORMAT = {
+    "container": "raw",
+    "encoding": "pcm_mulaw",
+    "sample_rate": 8000,
+}
+
+
+# ── Persistent Cartesia SDK client ────────────────────────────────
+_cartesia_client: AsyncCartesia | None = None
+
+
+def _get_cartesia_client() -> AsyncCartesia:
+    """Return a long-lived AsyncCartesia client, creating one if needed."""
+    global _cartesia_client
+    if _cartesia_client is None:
+        _cartesia_client = AsyncCartesia(api_key=settings.CARTESIA_API_KEY)
+    return _cartesia_client
+
+
+# ── WebSocket connection manager ──────────────────────────────────
+# We keep a single WebSocket connection open and reuse it across TTS
+# requests.  The Cartesia SDK supports multiplexing via "contexts" on
+# a single connection.  If the connection drops, we reconnect lazily.
+
+_ws_connection = None
+_ws_lock = asyncio.Lock()
+
+
+async def _get_ws_connection():
+    """Get or create a persistent Cartesia WebSocket connection."""
+    global _ws_connection
+    async with _ws_lock:
+        if _ws_connection is None:
+            client = _get_cartesia_client()
+            _ws_connection = await client.tts.websocket().__aenter__()
+            logger.info("Cartesia WebSocket connection established")
+        return _ws_connection
+
+
+async def _reset_ws_connection():
+    """Close and discard the current WebSocket connection."""
+    global _ws_connection
+    async with _ws_lock:
+        if _ws_connection is not None:
+            try:
+                await _ws_connection.__aexit__(None, None, None)
+            except Exception:
+                pass
+            _ws_connection = None
+            logger.info("Cartesia WebSocket connection reset")
+
+
+# ── Streaming TTS (primary) ──────────────────────────────────────
+
+async def tts_cartesia_stream(text: str, voice_id: str) -> AsyncGenerator[bytes, None]:
+    """Stream TTS audio chunks via Cartesia WebSocket.
+
+    Yields raw pcm_mulaw audio chunks as they're synthesized, allowing
+    the caller to forward them to the telephony provider immediately.
+    This is the low-latency path.
+
+    Falls back to the HTTP endpoint on WebSocket errors.
+    """
+    if not text or not text.strip():
+        logger.warning("TTS stream called with empty text, skipping")
+        return
+
+    try:
+        ws = await _get_ws_connection()
+        ctx = ws.context(
+            model_id=CARTESIA_MODEL,
+            voice={"mode": "id", "id": voice_id},
+            output_format=_OUTPUT_FORMAT,
+            language="en",
+        )
+        await ctx.push(text)
+        await ctx.no_more_inputs()
+
+        total_bytes = 0
+        async for response in ctx.receive():
+            if response.type == "chunk" and response.audio:
+                total_bytes += len(response.audio)
+                yield bytes(response.audio)
+            elif response.type == "error":
+                logger.error(
+                    "Cartesia WS TTS error: %s — %s",
+                    getattr(response, "title", "unknown"),
+                    getattr(response, "message", ""),
+                )
+                # Fall through to HTTP fallback
+                await _reset_ws_connection()
+                async for chunk in _tts_http_stream_fallback(text, voice_id):
+                    yield chunk
+                return
+
+        logger.debug("TTS streamed %d bytes for %d chars", total_bytes, len(text))
+
+    except Exception as e:
+        logger.warning("Cartesia WS TTS failed (%s), falling back to HTTP", e)
+        await _reset_ws_connection()
+        # Yield the full blob from HTTP as a single chunk
+        async for chunk in _tts_http_stream_fallback(text, voice_id):
+            yield chunk
+
+
+async def _tts_http_stream_fallback(text: str, voice_id: str) -> AsyncGenerator[bytes, None]:
+    """HTTP fallback — yields the complete audio as a single chunk."""
+    audio = await tts_cartesia(text, voice_id)
+    if audio:
+        yield audio
+
+
+# ── HTTP TTS (fallback / greetings) ──────────────────────────────
+
+# Persistent HTTP client — reuses TCP + TLS connections
 _http_client: httpx.AsyncClient | None = None
 
 _CARTESIA_HEADERS = {
@@ -30,7 +151,7 @@ _CARTESIA_HEADERS = {
 }
 
 
-def _get_client() -> httpx.AsyncClient:
+def _get_http_client() -> httpx.AsyncClient:
     """Return a long-lived httpx client, creating one if needed."""
     global _http_client
     if _http_client is None or _http_client.is_closed:
@@ -42,8 +163,9 @@ def _get_client() -> httpx.AsyncClient:
 
 async def tts_cartesia(text: str, voice_id: str) -> bytes:
     """
-    Convert text to mulaw 8kHz audio via Cartesia API.
+    Convert text to mulaw 8kHz audio via Cartesia HTTP API.
     Returns raw audio bytes ready for telephony media stream.
+    Used for greetings and as a fallback when WebSocket is unavailable.
     """
     if not text or not text.strip():
         logger.warning("TTS called with empty text, skipping")
@@ -61,7 +183,7 @@ async def tts_cartesia(text: str, voice_id: str) -> bytes:
         },
     }
 
-    client = _get_client()
+    client = _get_http_client()
     try:
         response = await client.post(
             "https://api.cartesia.ai/tts/bytes",
@@ -83,3 +205,19 @@ async def tts_cartesia(text: str, voice_id: str) -> bytes:
     except Exception as e:
         logger.error("Cartesia TTS error: %s", e)
         raise
+
+
+# ── Cleanup ──────────────────────────────────────────────────────
+
+async def close_tts():
+    """Close all TTS connections. Call at app shutdown."""
+    await _reset_ws_connection()
+    global _http_client
+    if _http_client and not _http_client.is_closed:
+        await _http_client.aclose()
+        _http_client = None
+    global _cartesia_client
+    if _cartesia_client:
+        await _cartesia_client.close()
+        _cartesia_client = None
+    logger.info("TTS connections closed")
