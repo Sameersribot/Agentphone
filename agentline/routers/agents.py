@@ -33,7 +33,6 @@ async def create_agent(
       - system_prompt: Instructions that define the agent's personality and behavior on calls
       - initial_greeting: What the AI agent says when the call connects
       - voice_id: TTS voice preset (e.g. "female-1") or Cartesia UUID
-      - model_tier: LLM model tier — "fast" (GPT-4o-mini) or "quality" (GPT-4o)
       - transfer_number: Phone number to transfer calls to (e.g. a human operator)
       - voicemail_message: Message the agent leaves if the call goes to voicemail
     """
@@ -51,7 +50,7 @@ async def create_agent(
         body.system_prompt,
         body.initial_greeting,
         body.voice_id,
-        body.model_tier,
+        "balanced",
         body.transfer_number,
         body.voicemail_message,
         now,
@@ -64,7 +63,6 @@ async def create_agent(
         system_prompt=body.system_prompt,
         initial_greeting=body.initial_greeting,
         voice_id=body.voice_id,
-        model_tier=body.model_tier,
         transfer_number=body.transfer_number,
         voicemail_message=body.voicemail_message,
         created_at=now,
@@ -100,7 +98,7 @@ async def get_agent(
     Get details of a specific AI voice agent.
 
     Returns the agent's full configuration including system prompt,
-    voice settings, greeting, model tier, and transfer number.
+    voice settings, greeting, and transfer number.
     """
     row = await db.fetchrow(
         "SELECT * FROM agents WHERE id = $1 AND account_id = $2",
@@ -123,7 +121,7 @@ async def update_agent(
     Update an AI voice agent's configuration.
 
     Modify any combination of the agent's settings: system prompt,
-    voice, greeting, model tier, transfer number, or voicemail message.
+    voice, greeting, transfer number, or voicemail message.
     Changes take effect on the next call the agent handles.
     Only include the fields you want to change — unset fields are preserved.
     """

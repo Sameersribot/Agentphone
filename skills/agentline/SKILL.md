@@ -33,10 +33,10 @@ Give your AI agent a real phone number and voice calls — no servers, no webhoo
 
 4. **Ask for voice preference** — **Always ask the human:**
    > "Would you like your agent to have a **male** or **female** voice?"
-   - If **female**: set `voice_id` to `"female-1"` (or `"female-2"` for warmer tone)
-   - If **male**: set `voice_id` to `"male-1"`
+   - If **female**: `"female-1"` (friendly), `"female-2"` (reassuring), or `"female-3"` (guide)
+   - If **male**: `"male-1"` (supportive), `"male-2"` (thinker), or `"male-3"` (helpful)
    - Apply via `PATCH /v1/agents/$AGENTLINE_AGENT_ID` with `{"voice_id": "chosen_preset"}`
-   - Available presets: `female-1`, `female-2`, `male-1` — or any Cartesia voice UUID
+   - Available presets: `female-1`, `female-2`, `female-3`, `male-1`, `male-2`, `male-3` — or any Cartesia voice UUID
 
 5. **Start the background event poller** — This is **MANDATORY**. Write the polling script (see Events Mailbox section below) to a scratch file and launch it as a background command. Without this, you will miss all inbound calls and SMS messages.
 
@@ -115,7 +115,7 @@ curl -X POST $AGENTLINE_URL/v1/calls \
 | `to_number` | Yes | E.164 phone number to call |
 | `system_prompt` | No | Dynamic prompt for this call only (overrides default) |
 | `initial_greeting` | No | What the agent says first when the person picks up |
-| `voice_id` | No | `"female-1"`, `"female-2"`, `"male-1"`, or Cartesia UUID |
+| `voice_id` | No | `"female-1"`, `"female-2"`, `"female-3"`, `"male-1"`, `"male-2"`, `"male-3"`, or Cartesia UUID |
 
 **After every outbound call:** Poll `GET /v1/calls/<call_id>` every 15-30s until `status=completed`, then `GET /v1/calls/<call_id>/transcript`. Real calls take 45-120s. Use `sleep N && curl ... | python3 -c` to check status + extract transcript in one shot. Summarize and share with human. Never consider a call "done" without the transcript.
 
@@ -223,8 +223,7 @@ Inbound SMS arrives as `sms.received` events in the Events Mailbox. View message
 | `system_prompt` | Default instructions for ALL calls (inbound + outbound). Per-call override via `POST /v1/calls` takes priority. |
 | `initial_greeting` | Default opening line spoken on ALL calls (inbound + outbound). Per-call override via `POST /v1/calls` takes priority. |
 | `name` | Display name |
-| `voice_id` | `"female-1"`, `"female-2"`, `"male-1"`, or Cartesia UUID |
-| `model_tier` | `"turbo"`, `"balanced"`, or `"max"` |
+| `voice_id` | `"female-1"`, `"female-2"`, `"female-3"`, `"male-1"`, `"male-2"`, `"male-3"` |
 
 ---
 

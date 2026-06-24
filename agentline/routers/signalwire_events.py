@@ -130,7 +130,6 @@ async def signalwire_stream(websocket: WebSocket, call_id: str):
                 if agent:
                     system_prompt = agent.get("system_prompt") or system_prompt
                     initial_greeting = agent.get("initial_greeting") or initial_greeting
-                    model_tier = agent.get("model_tier") or "balanced"
                     voicemail_message_text = agent.get("voicemail_message")
 
                 # Call direction (inbound / outbound)

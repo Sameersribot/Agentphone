@@ -4,7 +4,7 @@ AgentLine — Call & Transcript Pydantic schemas
 
 from pydantic import BaseModel, Field
 from datetime import datetime
-from typing import Literal
+
 
 
 class CallRequest(BaseModel):
@@ -13,7 +13,6 @@ class CallRequest(BaseModel):
     system_prompt: str | None = Field(default=None, description="Per-call system prompt override. Replaces the agent's default prompt for this call ONLY. If omitted, the agent's default system_prompt is used.")
     initial_greeting: str | None = Field(default=None, description="Per-call greeting override. Replaces the agent's default greeting for this call ONLY. If omitted, the agent's default initial_greeting is used.")
     voice_id: str | None = Field(default=None, description="Override the TTS voice for this call: preset name (e.g. 'female-1') or Cartesia UUID")
-    model_tier: Literal["turbo", "balanced", "max"] = Field(default="balanced", description="LLM model tier for this call: 'turbo', 'balanced', or 'max'")
     from_number_id: str | None = Field(default=None, description="Specific phone number ID to call from; defaults to the agent's assigned number")
 
 

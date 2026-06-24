@@ -6,7 +6,7 @@ Voice Resolution Order (highest priority wins):
   1. Per-call override  → POST /v1/calls { "voice_id": "..." }
   2. Agent setting       → agent.voice_id (set via PATCH /v1/agents/{id})
   3. Account default     → account.default_voice_id (set via PATCH /v1/account/voice)
-  4. System default      → DEFAULT_VOICE_ID (Barbershop Man)
+  4. System default      → DEFAULT_VOICE_ID (Supportive Male)
 
 Users can pass either:
   - A Cartesia UUID directly (e.g. "e07c00bc-4134-4eae-9ea4-1a55fb45746b")
@@ -25,25 +25,40 @@ logger = logging.getLogger(__name__)
 VOICE_PRESETS: dict[str, dict] = {
     # Female voices
     "female-1": {
-        "id": "e07c00bc-4134-4eae-9ea4-1a55fb45746b",
-        "name": "Female Voice 1",
-        "description": "Clear, professional female voice",
+        "id": "f786b574-daa5-4673-aa0c-cbe3e8534c02",
+        "name": "Friendly Female",
+        "description": "Friendly, approachable female voice",
     },
     "female-2": {
-        "id": "630ed21c-2c5c-41cf-9d82-10a7fd668370",
-        "name": "Female Voice 2",
-        "description": "Warm, conversational female voice",
+        "id": "9626c31c-bec5-4cca-baa8-f8ba9e84c8bc",
+        "name": "Reassuring Female",
+        "description": "Reassuring, calming female voice",
+    },
+    "female-3": {
+        "id": "f9836c6e-a0bd-460e-9d3c-f7299fa60f94",
+        "name": "Guide Female",
+        "description": "Guiding, instructional female voice",
     },
     # Male voices
     "male-1": {
-        "id": "a0e99841-438c-4a64-b679-ae501e7d6091",
-        "name": "Barbershop Man",
-        "description": "Clear male voice, good for phone calls",
+        "id": "630ed21c-2c5c-41cf-9d82-10a7fd668370",
+        "name": "Supportive Male",
+        "description": "Supportive, encouraging male voice",
+    },
+    "male-2": {
+        "id": "5ee9feff-1265-424a-9d7f-8e4d431a12c7",
+        "name": "Thinker Male",
+        "description": "Thoughtful, reflective male voice",
+    },
+    "male-3": {
+        "id": "a167e0f3-df7e-4d52-a9c3-f949145efdab",
+        "name": "Helpful Male",
+        "description": "Helpful, reliable male voice",
     },
 }
 
-# System-wide default (Barbershop Man)
-DEFAULT_VOICE_ID = "a0e99841-438c-4a64-b679-ae501e7d6091"
+# System-wide default (Supportive Male)
+DEFAULT_VOICE_ID = "630ed21c-2c5c-41cf-9d82-10a7fd668370"
 
 # UUID regex for validation
 _UUID_RE = re.compile(

@@ -103,11 +103,11 @@ async def update_account_voice(
       1. Per-call voice_id (POST /v1/calls)
       2. Agent voice_id (PATCH /v1/agents/{id})
       3. Account default (this endpoint)  ← you are here
-      4. System default (Barbershop Man)
+      4. System default (Supportive Male)
 
     Accepts:
-      - A preset name: "female-1", "female-2", "male-1"
-      - A Cartesia voice UUID: "e07c00bc-4134-4eae-9ea4-1a55fb45746b"
+      - A preset name: "female-1", "female-2", "female-3", "male-1", "male-2", "male-3"
+      - A Cartesia voice UUID: "f786b574-daa5-4673-aa0c-cbe3e8534c02"
     """
     # Validate the voice_id resolves to something valid
     resolved = resolve_voice_id(body.voice_id)
