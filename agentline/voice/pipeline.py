@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 # How long to wait (seconds) after Deepgram signals speech_final before
 # actually triggering the LLM.  If the user resumes speaking within this
 # window the timer is cancelled and the new words are appended.
-DEBOUNCE_SECONDS = 0.9
+DEBOUNCE_SECONDS = 0.7
 
 # Minimum number of audio chunks the agent must play before barge-in
 # is honoured.  Prevents the agent from being cut off by echo/noise
