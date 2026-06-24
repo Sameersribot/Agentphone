@@ -103,11 +103,17 @@ async def signalwire_stream(websocket: WebSocket, call_id: str):
     await websocket.accept()
     logger.info("WebSocket stream connected for call %s", call_id)
 
-    # Load call and agent context
+    # ── Prompt & greeting resolution chain ──────────────────────────
+    # Priority (highest wins):  per-call override → agent default → hardcoded fallback
+    #   system_prompt:    call.system_prompt  →  agent.system_prompt  →  generic fallback
+    #   initial_greeting: call.initial_greeting → agent.initial_greeting → generic fallback
+    #   voice_id:         call.voice_id → agent.voice_id → account.default_voice_id → DEFAULT_VOICE_ID
     system_prompt = "You are a helpful voice assistant. Keep responses brief and conversational."
     initial_greeting = "Hello, how can I help you today?"
     voice_id = DEFAULT_VOICE_ID
     model_tier = "balanced"
+    call_direction = "inbound"          # overridden from call record below
+    voicemail_message_text = None       # from agent config
 
     try:
         async with get_db_conn() as db:
@@ -120,10 +126,15 @@ async def signalwire_stream(websocket: WebSocket, call_id: str):
                     "SELECT * FROM accounts WHERE id=$1", call["account_id"]
                 ) if call.get("account_id") else None
 
+                # Step 1: Agent defaults (override hardcoded fallbacks)
                 if agent:
                     system_prompt = agent.get("system_prompt") or system_prompt
                     initial_greeting = agent.get("initial_greeting") or initial_greeting
                     model_tier = agent.get("model_tier") or "balanced"
+                    voicemail_message_text = agent.get("voicemail_message")
+
+                # Call direction (inbound / outbound)
+                call_direction = call.get("direction", "inbound")
 
 
                 # Voice resolution chain: per-call → agent → account → default
@@ -133,12 +144,11 @@ async def signalwire_stream(websocket: WebSocket, call_id: str):
                     account_voice=account.get("default_voice_id") if account else None,
                 )
 
+                # Step 2: Per-call overrides (highest priority — set via POST /v1/calls)
                 if call.get("system_prompt"):
-                    # Per-call system prompt override
                     system_prompt = call["system_prompt"]
 
                 if call.get("initial_greeting"):
-                    # Per-call greeting override (outbound calls)
                     initial_greeting = call["initial_greeting"]
     except Exception as e:
         logger.warning("Failed to load agent context for call %s: %s", call_id, e)
@@ -152,6 +162,8 @@ async def signalwire_stream(websocket: WebSocket, call_id: str):
             voice_id=voice_id,
             model_tier=model_tier,
             provider="signalwire",
+            call_direction=call_direction,
+            voicemail_message=voicemail_message_text,
         )
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected for call %s", call_id)
@@ -448,11 +460,12 @@ async def signalwire_inbound_call(request: Request):
         await db.execute(
             """INSERT INTO calls
                (id, account_id, agent_id, number_id, provider_call_id,
-                direction, from_number, to_number, system_prompt, status, started_at)
-               VALUES ($1,$2,$3,$4,$5,'inbound',$6,$7,$8,'in-progress',now())""",
+                direction, from_number, to_number, system_prompt, initial_greeting, status, started_at)
+               VALUES ($1,$2,$3,$4,$5,'inbound',$6,$7,$8,$9,'in-progress',now())""",
             call_id, number["account_id"], number["agent_id"], number["id"],
             call_sid, from_number, to_number,
             agent["system_prompt"] if agent else "",
+            agent.get("initial_greeting") if agent else None,
         )
 
         # ── Push call.received event to event mailbox ──

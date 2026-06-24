@@ -66,6 +66,37 @@ def _is_only_filler(text: str) -> bool:
     return len(words) > 0 and all(w in FILLER_WORDS for w in words)
 
 
+# ── Outbound call prompt context ──────────────────────────────────
+# Prepended to the system prompt on outbound calls so the LLM knows it's
+# the caller, not the receiver.  The LLM handles voicemail, IVR, screening,
+# and live-answer scenarios through natural language understanding — no
+# brittle keyword matching needed.
+
+OUTBOUND_CONTEXT = """\
+OUTBOUND CALL CONTEXT — YOU are the one who initiated this call. The other person did NOT call you.
+
+CRITICAL RULE: Do NOT speak first. LISTEN to what the other end says, then respond appropriately:
+
+1. LIVE HUMAN (they say "Hello?", "Hi", "Yeah?", "Who is this?", or similar greeting):
+   → Introduce yourself and state your purpose naturally.
+
+2. VOICEMAIL SYSTEM (you hear "You've reached...", "Leave a message...", "not available", "after the beep", etc.):
+   → Your ENTIRE response must be ONLY: [VOICEMAIL_DETECTED]
+   → Do not say anything else before or after this marker.
+
+3. IVR / PHONE MENU (you hear "Press 1 to accept", "For sales press 2", "Say yes to continue", etc.):
+   → Respond verbally with the appropriate word or digit (say "one", "yes", "accept", etc.).
+   → After navigating the menu, continue as if a human answered.
+
+4. CALL SCREENING (you hear "State your name", "Who is calling?", "Record your name and purpose"):
+   → State your name/identity and purpose clearly and briefly.
+   → Wait for the person to come on the line, then introduce yourself.
+
+5. PERSON ANSWERED BUT SAID NOTHING (you receive "[The person answered the phone but hasn't said anything yet]"):
+   → Introduce yourself naturally, as if you're making a normal phone call.
+"""
+
+
 # ── Fire-and-forget DB write ─────────────────────────────────────
 
 async def _save_transcript(call_id: str, turns: list[dict]):
@@ -148,10 +179,17 @@ async def run_pipeline(
     voice_id: str,
     model_tier: str,
     provider: str = "signalwire",
+    call_direction: str = "inbound",
+    voicemail_message: str | None = None,
 ):
     """
     Main voice pipeline coroutine. One instance per active call.
     Bridges Provider audio ↔ Deepgram STT ↔ LLM ↔ Cartesia TTS.
+
+    On **inbound** calls the agent greets immediately (current behaviour).
+    On **outbound** calls the agent listens first, letting the LLM classify
+    the other end (live human / voicemail / IVR / screening) and respond
+    appropriately.
 
     Args:
         provider_ws: WebSocket connection to the telephony provider
@@ -161,6 +199,8 @@ async def run_pipeline(
         voice_id: Cartesia voice ID (UUID or preset name — resolved before use)
         model_tier: LLM model tier (turbo/balanced/max)
         provider: 'signalwire' or 'plivo'
+        call_direction: 'inbound' or 'outbound' — controls greeting behaviour
+        voicemail_message: Message to leave if outbound call reaches voicemail
     """
     voice_id = resolve_voice_id(voice_id)
     send_audio = PROVIDER_SEND.get(provider, _send_audio_signalwire)
@@ -176,6 +216,24 @@ async def run_pipeline(
     # Checked between audio chunks — no latency overhead, just an Event.is_set() check.
     barge_in = asyncio.Event()
     agent_speaking = False  # True while we're actively flushing audio to the caller
+
+    # ── Outbound call state ───────────────────────────────────────
+    first_speech_received = asyncio.Event()   # Set when callee speaks for the first time
+    voicemail_detected = asyncio.Event()      # Set when LLM outputs [VOICEMAIL_DETECTED]
+    voicemail_greeting_ended = asyncio.Event() # Set by UtteranceEnd after voicemail detected (beep)
+
+    # Augment system prompt for outbound calls so the LLM knows
+    # to listen first and handle voicemail / IVR / screening.
+    if call_direction == "outbound":
+        outbound_prompt = OUTBOUND_CONTEXT
+        if initial_greeting:
+            outbound_prompt += (
+                f'\nYour configured introduction when a live human answers is: '
+                f'"{initial_greeting}"\n'
+                f'Use this as the basis for your introduction, adapting it naturally.\n'
+            )
+        system_prompt = outbound_prompt + "\n" + (system_prompt or "")
+        logger.info("Call %s — outbound mode: system prompt augmented with listener-first context", call_id)
 
     # Set up Deepgram streaming STT
     dg_connection = create_deepgram_connection()
@@ -197,6 +255,16 @@ async def run_pipeline(
             async for sentence in llm_response_stream(
                 system_prompt, conversation_history, model_tier
             ):
+                # ── Voicemail sentinel interception ──────────────────
+                # If the LLM outputs [VOICEMAIL_DETECTED], it means it
+                # heard a voicemail greeting.  Stop generation immediately
+                # — no TTS, no audio sent to the caller.
+                if "[VOICEMAIL_DETECTED]" in sentence:
+                    logger.info("Call %s — LLM detected voicemail (sentence: %s)", call_id, sentence[:80])
+                    voicemail_detected.set()
+                    await audio_queue.put(None)  # sentinel — stop playback
+                    return
+
                 try:
                     async for audio_chunk in tts_cartesia_stream(sentence, voice_id):
                         await audio_queue.put((audio_chunk, sentence))
@@ -281,6 +349,62 @@ async def run_pipeline(
 
             agent_speaking = False
 
+            # ── Voicemail handling (outbound calls) ───────────────
+            if voicemail_detected.is_set():
+                gen_task.cancel()
+                try:
+                    await gen_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+                if voicemail_message:
+                    # Wait for the voicemail greeting to finish playing
+                    # (UtteranceEnd fires when speech stops = the beep)
+                    logger.info("Call %s — waiting for voicemail greeting to end...", call_id)
+                    if not voicemail_greeting_ended.is_set():
+                        try:
+                            await asyncio.wait_for(
+                                voicemail_greeting_ended.wait(), timeout=15.0
+                            )
+                        except asyncio.TimeoutError:
+                            logger.warning(
+                                "Call %s — voicemail greeting timeout, leaving message now",
+                                call_id,
+                            )
+
+                    # Brief pause after the beep
+                    await asyncio.sleep(0.5)
+
+                    # Leave the voicemail message
+                    try:
+                        vm_audio = await tts_cartesia(voicemail_message, voice_id)
+                        await send_audio(provider_ws, vm_audio, stream_sid)
+                        transcript_turns.append({
+                            "role": "agent",
+                            "text": f"[Voicemail] {voicemail_message}",
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        })
+                        asyncio.create_task(
+                            _save_transcript(call_id, list(transcript_turns))
+                        )
+                        logger.info("Call %s — voicemail message left", call_id)
+                    except Exception as e:
+                        logger.error(
+                            "Call %s — failed to leave voicemail: %s", call_id, e
+                        )
+
+                    # Let the audio finish playing before hangup
+                    await asyncio.sleep(2.0)
+                else:
+                    logger.info(
+                        "Call %s — voicemail detected, no message configured, hanging up",
+                        call_id,
+                    )
+
+                # Hang up the call
+                await _hangup_outbound_call()
+                return
+
             if barged:
                 # Stop LLM+TTS generation and flush the provider's audio buffer
                 gen_task.cancel()
@@ -337,9 +461,48 @@ async def run_pipeline(
         finally:
             pending_response_task = None
 
+    # ── Outbound call helpers ─────────────────────────────────────
+
+    async def _outbound_silence_fallback():
+        """If callee says nothing within 2s, prompt the agent to initiate."""
+        nonlocal pending_response_task
+        await asyncio.sleep(2.0)
+        if first_speech_received.is_set() or voicemail_detected.is_set():
+            return  # Speech arrived (or voicemail detected) during the wait
+
+        logger.info("Call %s — outbound: no speech after 2s, agent initiating", call_id)
+        first_speech_received.set()  # Prevent re-triggering
+
+        silence_utterance = (
+            "[The person answered the phone but hasn't said anything yet]"
+        )
+        if pending_response_task and not pending_response_task.done():
+            pending_response_task.cancel()
+        pending_response_task = asyncio.create_task(
+            _schedule_response(silence_utterance)
+        )
+
+    async def _hangup_outbound_call():
+        """Terminate the outbound call via the provider REST API."""
+        try:
+            async with get_db_conn() as db:
+                call = await db.fetchrow(
+                    "SELECT provider_call_id FROM calls WHERE id=$1", call_id
+                )
+                if call and call["provider_call_id"]:
+                    from agentline.signalwire_client import hangup_call
+                    await hangup_call(call["provider_call_id"])
+                    logger.info("Call %s — outbound hangup executed", call_id)
+        except Exception as e:
+            logger.warning("Call %s — outbound hangup failed: %s", call_id, e)
+
     # This event fires for each transcript segment
     async def on_transcript(self, result, **kwargs):
         nonlocal pending_response_task
+
+        # Voicemail already detected — ignore further transcripts
+        if voicemail_detected.is_set():
+            return
 
         # We only care about finalized transcript segments
         if not result.is_final:
@@ -397,6 +560,11 @@ async def run_pipeline(
         This fires the instant Deepgram's VAD detects voice energy, BEFORE any
         transcript is produced.  Much faster than waiting for on_transcript.
         """
+        # Track first speech from callee (used by outbound silence fallback)
+        if not first_speech_received.is_set():
+            first_speech_received.set()
+            logger.debug("Call %s — first speech detected from callee", call_id)
+
         if agent_speaking:
             barge_in.set()
             logger.debug("Call %s — SpeechStarted: barge-in signalled", call_id)
@@ -404,6 +572,15 @@ async def run_pipeline(
     async def on_utterance_end(self, utterance_end, **kwargs):
         nonlocal pending_response_task
         logger.info("Call %s — Deepgram UtteranceEnd event (buffer: %s)", call_id, utterance_buffer)
+
+        # If voicemail was detected, this UtteranceEnd means the greeting
+        # finished playing (i.e. the beep happened).  Signal the voicemail
+        # handler so it can start leaving the message.
+        if voicemail_detected.is_set():
+            voicemail_greeting_ended.set()
+            logger.info("Call %s — voicemail greeting ended (beep detected via UtteranceEnd)", call_id)
+            return
+
         # Fallback: if we have buffered text but speech_final never fired, flush now
         if utterance_buffer:
             full_utterance = " ".join(utterance_buffer).strip()
@@ -470,23 +647,33 @@ async def run_pipeline(
                     start_data.get("tracks", "unknown"),
                 )
 
-                # NOW send the initial greeting — stream is ready
-                if initial_greeting and not greeting_sent:
-                    try:
-                        logger.info("Sending greeting for call %s with voice %s", call_id, voice_id)
-                        audio = await tts_cartesia(initial_greeting, voice_id)
-                        await send_audio(provider_ws, audio, stream_sid)
-                        transcript_turns.append({
-                            "role": "agent",
-                            "text": initial_greeting,
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                        })
-                        greeting_sent = True
-                        logger.info("Greeting sent for call %s (%d bytes audio)", call_id, len(audio))
-                    except Exception as e:
-                        logger.error("Failed to send greeting for call %s: %s", call_id, e)
-                        # Don't mark as sent — but don't retry either to avoid loops
-                        greeting_sent = True
+                # ── Direction-aware greeting ──────────────────────────
+                if call_direction == "inbound":
+                    # Inbound: greet immediately (caller is waiting)
+                    if initial_greeting and not greeting_sent:
+                        try:
+                            logger.info("Sending greeting for call %s with voice %s", call_id, voice_id)
+                            audio = await tts_cartesia(initial_greeting, voice_id)
+                            await send_audio(provider_ws, audio, stream_sid)
+                            transcript_turns.append({
+                                "role": "agent",
+                                "text": initial_greeting,
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                            })
+                            greeting_sent = True
+                            logger.info("Greeting sent for call %s (%d bytes audio)", call_id, len(audio))
+                        except Exception as e:
+                            logger.error("Failed to send greeting for call %s: %s", call_id, e)
+                            greeting_sent = True
+                else:
+                    # Outbound: listen first — suppress greeting, start silence fallback
+                    greeting_sent = True  # Prevent greeting from firing later
+                    logger.info(
+                        "Call %s — outbound mode: listening first (greeting suppressed, "
+                        "silence fallback in 2s)",
+                        call_id,
+                    )
+                    asyncio.create_task(_outbound_silence_fallback())
 
             elif event == "stop":
                 logger.info("%s sent stop event for call %s (received %d media frames total)", provider.capitalize(), call_id, media_frame_count)

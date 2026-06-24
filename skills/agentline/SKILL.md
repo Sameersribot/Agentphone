@@ -61,12 +61,23 @@ Base URL: `https://api.agentline.cloud`
 
 AgentLine runs in **Hosted Mode** — the server runs the AI voice conversation autonomously. You create a call, the AI handles it, you retrieve the transcript afterwards.
 
-### System Prompts
+### System Prompt & Greeting Resolution
 
-- **Dynamic prompt** — `system_prompt` field in `POST /v1/calls`. Overrides default for that call only.
-- **Default prompt** — stored on agent via `PATCH /v1/agents/{agent_id}`. Used for all inbound calls and outbound calls without a dynamic prompt.
+Both `system_prompt` and `initial_greeting` follow the same priority chain:
 
-> ⚠️ **`system_prompt` is a FULL REPLACE, not append.** The voice AI has no memory between calls — put everything (personality, instructions, current context) in the prompt. Update it whenever your context changes.
+| Priority | Where to set | Scope | API |
+|----------|-------------|-------|-----|
+| **1 (highest)** | Per-call override | This call only | `POST /v1/calls` with `system_prompt` / `initial_greeting` |
+| **2** | Agent default | All calls on this agent | `PATCH /v1/agents/{id}` with `system_prompt` / `initial_greeting` |
+| **3 (lowest)** | Hardcoded fallback | Last resort | Generic prompt + "Hello, how can I help you today?" |
+
+**When to use which:**
+- **Set on the agent** (`PATCH /v1/agents`) when you want a persistent personality/greeting for ALL calls (inbound AND outbound).
+- **Set per-call** (`POST /v1/calls`) when you need a one-time context-specific prompt/greeting for a single outbound call. Does NOT change the agent's default.
+
+> ⚠️ **`system_prompt` is a FULL REPLACE, not append.** The voice AI has no memory between calls — include everything (personality, instructions, current context) in the prompt.
+
+> ⚠️ **`initial_greeting`** is what the agent SPEAKS ALOUD at the start of the call. It is NOT part of the system prompt — it's the first thing the caller hears. Set it on the agent for a consistent greeting, or override it per-call for context-specific openers.
 
 ---
 
@@ -209,8 +220,8 @@ Inbound SMS arrives as `sms.received` events in the Events Mailbox. View message
 
 | Field | Description |
 |-------|-------------|
-| `system_prompt` | Full instructions + current context for voice AI |
-| `initial_greeting` | What the agent says when answering inbound calls |
+| `system_prompt` | Default instructions for ALL calls (inbound + outbound). Per-call override via `POST /v1/calls` takes priority. |
+| `initial_greeting` | Default opening line spoken on ALL calls (inbound + outbound). Per-call override via `POST /v1/calls` takes priority. |
 | `name` | Display name |
 | `voice_id` | `"female-1"`, `"female-2"`, `"male-1"`, or Cartesia UUID |
 | `model_tier` | `"turbo"`, `"balanced"`, or `"max"` |

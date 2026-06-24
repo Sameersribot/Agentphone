@@ -10,8 +10,8 @@ from typing import Literal
 class CallRequest(BaseModel):
     agent_id: str = Field(description="ID of the AI agent making the call (e.g. 'agt_abc123')")
     to_number: str = Field(description="Destination phone number in E.164 format (e.g. '+12125551234')")
-    system_prompt: str | None = Field(default=None, description="Override the agent's default system prompt for this call only")
-    initial_greeting: str | None = Field(default=None, description="Override the agent's greeting for this call only")
+    system_prompt: str | None = Field(default=None, description="Per-call system prompt override. Replaces the agent's default prompt for this call ONLY. If omitted, the agent's default system_prompt is used.")
+    initial_greeting: str | None = Field(default=None, description="Per-call greeting override. Replaces the agent's default greeting for this call ONLY. If omitted, the agent's default initial_greeting is used.")
     voice_id: str | None = Field(default=None, description="Override the TTS voice for this call: preset name (e.g. 'female-1') or Cartesia UUID")
     model_tier: Literal["turbo", "balanced", "max"] = Field(default="balanced", description="LLM model tier for this call: 'turbo', 'balanced', or 'max'")
     from_number_id: str | None = Field(default=None, description="Specific phone number ID to call from; defaults to the agent's assigned number")

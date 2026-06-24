@@ -82,7 +82,8 @@ async def create_call(
 
     call_id = f"call_{secrets.token_urlsafe(12)}"
     system_prompt = body.system_prompt or agent["system_prompt"]
-    initial_greeting = body.initial_greeting  # Per-call override (None = use agent default)
+    # Per-call greeting override — if None, the WebSocket handler falls back to agent.initial_greeting
+    initial_greeting = body.initial_greeting
     now = datetime.now(timezone.utc)
 
     await db.execute(
