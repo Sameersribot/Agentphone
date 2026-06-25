@@ -32,6 +32,7 @@ CREATE TABLE agents (
     model_tier       TEXT DEFAULT 'balanced',
     transfer_number  TEXT,
     voicemail_message TEXT,
+    owner_phone      TEXT,          -- Owner's phone (E.164). Calls from this number trigger task mode.
     created_at       TIMESTAMPTZ DEFAULT now()
 );
 

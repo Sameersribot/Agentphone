@@ -39,22 +39,46 @@ async def create_agent(
     agent_id = f"agt_{secrets.token_urlsafe(12)}"
     now = datetime.now(timezone.utc)
 
-    await db.execute(
-        """INSERT INTO agents
-           (id, account_id, name, system_prompt, initial_greeting,
-            voice_id, model_tier, transfer_number, voicemail_message, created_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)""",
-        agent_id,
-        account["id"],
-        body.name,
-        body.system_prompt,
-        body.initial_greeting,
-        body.voice_id,
-        "balanced",
-        body.transfer_number,
-        body.voicemail_message,
-        now,
-    )
+    # Try INSERT with owner_phone; fall back without it if migration hasn't run yet.
+    try:
+        await db.execute(
+            """INSERT INTO agents
+               (id, account_id, name, system_prompt, initial_greeting,
+                voice_id, model_tier, transfer_number, voicemail_message, owner_phone, created_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)""",
+            agent_id,
+            account["id"],
+            body.name,
+            body.system_prompt,
+            body.initial_greeting,
+            body.voice_id,
+            "balanced",
+            body.transfer_number,
+            body.voicemail_message,
+            body.owner_phone,
+            now,
+        )
+    except Exception as e:
+        if "owner_phone" in str(e):
+            # Column doesn't exist yet — insert without it
+            await db.execute(
+                """INSERT INTO agents
+                   (id, account_id, name, system_prompt, initial_greeting,
+                    voice_id, model_tier, transfer_number, voicemail_message, created_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)""",
+                agent_id,
+                account["id"],
+                body.name,
+                body.system_prompt,
+                body.initial_greeting,
+                body.voice_id,
+                "balanced",
+                body.transfer_number,
+                body.voicemail_message,
+                now,
+            )
+        else:
+            raise
 
     return AgentOut(
         id=agent_id,
@@ -65,6 +89,7 @@ async def create_agent(
         voice_id=body.voice_id,
         transfer_number=body.transfer_number,
         voicemail_message=body.voicemail_message,
+        owner_phone=body.owner_phone,
         created_at=now,
     )
 
@@ -138,21 +163,34 @@ async def update_agent(
     if not updates:
         raise HTTPException(400, "No fields to update.")
 
-    set_clauses = []
-    values = []
-    for i, (field, value) in enumerate(updates.items(), start=1):
-        set_clauses.append(f"{field} = ${i}")
-        values.append(value)
+    def _build_update_query(upd: dict):
+        set_clauses = []
+        values = []
+        for i, (field, value) in enumerate(upd.items(), start=1):
+            set_clauses.append(f"{field} = ${i}")
+            values.append(value)
+        values.append(agent_id)
+        values.append(account["id"])
+        query = f"""UPDATE agents
+                    SET {', '.join(set_clauses)}
+                    WHERE id = ${len(values) - 1} AND account_id = ${len(values)}
+                    RETURNING *"""
+        return query, values
 
-    values.append(agent_id)
-    values.append(account["id"])
+    query, values = _build_update_query(updates)
 
-    query = f"""UPDATE agents
-                SET {', '.join(set_clauses)}
-                WHERE id = ${len(values) - 1} AND account_id = ${len(values)}
-                RETURNING *"""
-
-    row = await db.fetchrow(query, *values)
+    try:
+        row = await db.fetchrow(query, *values)
+    except Exception as e:
+        if "owner_phone" in str(e) and "owner_phone" in updates:
+            # Column doesn't exist yet — retry without it
+            updates.pop("owner_phone")
+            if not updates:
+                raise HTTPException(400, "owner_phone is not yet available. Run the migration first.")
+            query, values = _build_update_query(updates)
+            row = await db.fetchrow(query, *values)
+        else:
+            raise
     return dict(row)
 
 

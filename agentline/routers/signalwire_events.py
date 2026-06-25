@@ -34,6 +34,27 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/signalwire", tags=["SignalWire Events"])
 
+# ── Owner mode prompt ─────────────────────────────────────────────
+# Prepended to the system prompt when the account owner calls their
+# own agent.  The LLM treats the caller as the boss giving tasks.
+OWNER_MODE_PROMPT = """\
+OWNER MODE — The person on this call is your OWNER (the account holder who controls you).
+
+CRITICAL RULES:
+1. This is NOT a regular caller. This is your boss giving you instructions.
+2. LISTEN carefully — they are telling you a TASK to perform.
+3. Keep responses extremely short: acknowledge, confirm, clarify if needed.
+4. Do NOT make small talk. Be direct and efficient.
+5. Summarize the task back to confirm you understood correctly.
+6. When you have the full task, say: "Got it, I'll get that done."
+"""
+
+
+def _build_owner_prompt(agent) -> str:
+    """Build system prompt for owner-mode calls."""
+    base = agent.get("system_prompt") or ""
+    return OWNER_MODE_PROMPT + "\n" + base
+
 def _xml(body: str) -> Response:
     return Response(content=body, media_type="application/xml")
 
@@ -377,6 +398,10 @@ async def signalwire_hangup(request: Request, call_id: str):
 
             # ── Push call.completed event with transcript to event mailbox ──
             transcript = _parse_transcript(call.get("transcript"))
+
+            # Detect owner call by checking the system_prompt sentinel
+            is_owner_task = (call.get("system_prompt") or "").startswith("OWNER MODE")
+
             event_id = f"evt_{secrets.token_urlsafe(12)}"
             event_payload = {
                 "call_id": call_id,
@@ -386,9 +411,13 @@ async def signalwire_hangup(request: Request, call_id: str):
                 "to_number": call.get("to_number", ""),
                 "duration_seconds": duration_secs,
                 "transcript": transcript,
+                "is_owner_task": is_owner_task,
             }
 
-            event_type = "call.completed" if call_status == "completed" else f"call.{call_status}"
+            if is_owner_task and call_status == "completed":
+                event_type = "call.owner_task"
+            else:
+                event_type = "call.completed" if call_status == "completed" else f"call.{call_status}"
 
             try:
                 await db.execute(
@@ -455,6 +484,16 @@ async def signalwire_inbound_call(request: Request):
 
         agent = await db.fetchrow("SELECT * FROM agents WHERE id=$1", number["agent_id"])
 
+        # ── Owner detection ──────────────────────────────────
+        is_owner_call = bool(
+            agent
+            and agent.get("owner_phone")
+            and from_number
+            and from_number.lstrip("+") == agent["owner_phone"].lstrip("+")
+        )
+        if is_owner_call:
+            logger.info("Inbound call — OWNER DETECTED (from %s)", from_number)
+
         call_id = f"call_{secrets.token_urlsafe(12)}"
         await db.execute(
             """INSERT INTO calls
@@ -463,8 +502,8 @@ async def signalwire_inbound_call(request: Request):
                VALUES ($1,$2,$3,$4,$5,'inbound',$6,$7,$8,$9,'in-progress',now())""",
             call_id, number["account_id"], number["agent_id"], number["id"],
             call_sid, from_number, to_number,
-            agent["system_prompt"] if agent else "",
-            agent.get("initial_greeting") if agent else None,
+            _build_owner_prompt(agent) if is_owner_call else (agent["system_prompt"] if agent else ""),
+            "Hey boss, what would you like me to do?" if is_owner_call else (agent.get("initial_greeting") if agent else None),
         )
 
         # ── Push call.received event to event mailbox ──
@@ -475,6 +514,7 @@ async def signalwire_inbound_call(request: Request):
             "number": to_number,
             "from": from_number,
             "direction": "inbound",
+            "is_owner_call": is_owner_call,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -587,8 +627,12 @@ async def signalwire_inbound_hangup(request: Request):
 
             # Push event to mailbox
             transcript = _parse_transcript(call.get("transcript"))
+            is_owner_task = (call.get("system_prompt") or "").startswith("OWNER MODE")
             event_id = f"evt_{secrets.token_urlsafe(12)}"
-            event_type = "call.completed" if call_status == "completed" else f"call.{call_status}"
+            if is_owner_task and call_status == "completed":
+                event_type = "call.owner_task"
+            else:
+                event_type = "call.completed" if call_status == "completed" else f"call.{call_status}"
             try:
                 await db.execute(
                     """INSERT INTO event_mailbox
@@ -603,6 +647,7 @@ async def signalwire_inbound_hangup(request: Request):
                         "to_number": call.get("to_number", ""),
                         "duration_seconds": duration_secs,
                         "transcript": transcript,
+                        "is_owner_task": is_owner_task,
                     }),
                 )
             except Exception as e:

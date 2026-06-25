@@ -38,9 +38,15 @@ Give your AI agent a real phone number and voice calls — no servers, no webhoo
    - Apply via `PATCH /v1/agents/$AGENTLINE_AGENT_ID` with `{"voice_id": "chosen_preset"}`
    - Available presets: `female-1`, `female-2`, `female-3`, `male-1`, `male-2`, `male-3` — or any Cartesia voice UUID
 
-5. **Start the background event poller** — This is **MANDATORY**. Write the polling script (see Events Mailbox section below) to a scratch file and launch it as a background command. Without this, you will miss all inbound calls and SMS messages.
+5. **Ask for owner phone (optional)** — **Ask the human:**
+   > "Would you like to register your personal phone number so you can call your agent to give it tasks?"
+   - If yes, get their phone number in E.164 format (e.g. `+12125551234`)
+   - Apply via `PATCH /v1/agents/$AGENTLINE_AGENT_ID` with `{"owner_phone": "+1XXXXXXXXXX"}`
+   - When the owner calls the agent's number from this phone, the agent enters **task mode** — it treats the conversation as instructions to execute, not a regular call.
 
-> ⚠️ **Do NOT skip ANY steps.** Steps 1-4 set up the agent. Step 5 keeps it alive and aware of incoming calls/texts.
+6. **Start the background event poller** — This is **MANDATORY**. Write the polling script (see Events Mailbox section below) to a scratch file and launch it as a background command. Without this, you will miss all inbound calls and SMS messages.
+
+> ⚠️ **Do NOT skip ANY steps.** Steps 1-5 set up the agent. Step 6 keeps it alive and aware of incoming calls/texts.
    - Write the polling script (Bash for Linux/macOS, PowerShell for Windows) from the Events Mailbox section below
    - Launch it as a background process with `terminal(background=true)`
    - Verify it's running
@@ -141,7 +147,7 @@ curl -X POST $AGENTLINE_URL/v1/calls \
 
 Events are pushed when someone calls or texts your agent's number. **You MUST poll regularly.**
 
-**Event types:** `call.received` (inbound call started), `call.completed` (call ended, includes transcript), `sms.received` (inbound SMS)
+**Event types:** `call.received` (inbound call started), `call.completed` (call ended, includes transcript), `call.owner_task` (owner call ended — transcript contains task instructions to execute), `sms.received` (inbound SMS)
 
 ### ⚡ MANDATORY — Background Event Polling
 
@@ -190,7 +196,7 @@ done
 
 ### Event payload structure
 
-Each event contains: `event_id`, `agent_id`, `event_type`, and a `payload` with call/SMS details. `call.completed` payloads include `from_number`, `to_number`, `duration_seconds`, and full `transcript` array. `sms.received` payloads include `from_number`, `body`, and `media_url`.
+Each event contains: `event_id`, `agent_id`, `event_type`, and a `payload` with call/SMS details. `call.completed` payloads include `from_number`, `to_number`, `duration_seconds`, and full `transcript` array. `call.owner_task` payloads are identical to `call.completed` but with `is_owner_task: true` — this means the transcript contains task instructions from the owner (see Owner Task Mode below). `sms.received` payloads include `from_number`, `body`, and `media_url`.
 
 ---
 
@@ -224,6 +230,7 @@ Inbound SMS arrives as `sms.received` events in the Events Mailbox. View message
 | `initial_greeting` | Default opening line spoken on ALL calls (inbound + outbound). Per-call override via `POST /v1/calls` takes priority. |
 | `name` | Display name |
 | `voice_id` | `"female-1"`, `"female-2"`, `"female-3"`, `"male-1"`, `"male-2"`, `"male-3"` |
+| `owner_phone` | Owner's phone number in E.164 format. Calls from this number enter **task mode**. |
 
 ---
 
@@ -304,6 +311,59 @@ All REST endpoints above are also available as MCP tools (`create_agent`, `make_
 
 ---
 
+## Owner Task Mode
+
+When the account owner calls the agent's number from the registered `owner_phone`, the voice AI enters **task mode**:
+
+1. The agent greets with: **"Hey boss, what would you like me to do?"**
+2. The owner speaks task instructions (e.g. "Call John and ask about the project deadline")
+3. The agent confirms: **"Got it, I'll get that done."**
+4. When the call ends, a `call.owner_task` event is pushed to the event mailbox
+
+### Setting the Owner Phone
+
+```bash
+curl -X PATCH $AGENTLINE_URL/v1/agents/$AGENTLINE_AGENT_ID \
+  -H "Authorization: Bearer $AGENTLINE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"owner_phone": "+1XXXXXXXXXX"}'
+```
+
+### Handling `call.owner_task` Events
+
+When polling `GET /v1/events`, if you receive an event with `event_type: "call.owner_task"`, the transcript contains **task instructions** from the owner — NOT a regular conversation to log.
+
+**You MUST:**
+1. Extract the human turns from the transcript — these are the owner's instructions
+2. Interpret them as a task to execute (e.g. make a call, send info, update settings)
+3. Execute the task using your available tools and context
+4. Report the result back to the human when complete
+
+**Example event payload:**
+```json
+{
+  "event_type": "call.owner_task",
+  "payload": {
+    "call_id": "call_abc123",
+    "is_owner_task": true,
+    "from_number": "+12125551234",
+    "transcript": [
+      {"role": "agent", "text": "Hey boss, what would you like me to do?"},
+      {"role": "human", "text": "Call the dentist office and reschedule my appointment to next Friday."},
+      {"role": "agent", "text": "Got it, I'll get that done."}
+    ]
+  }
+}
+```
+
+In this example, the task is: "Call the dentist office and reschedule my appointment to next Friday." You should execute this using the outbound call capability.
+
+> ⚠️ **`call.owner_task` events are NOT just transcripts to log.** They are instructions to EXECUTE. If you receive one, act on it.
+
+> ⚠️ **`call.received` events with `is_owner_call: true`** indicate the owner is currently on the phone. You don't need to act on these — the task will arrive as `call.owner_task` when the call ends.
+
+---
+
 ## Rules
 
 1. **E.164 format** — always `+1XXXXXXXXXX` for US numbers.
@@ -315,3 +375,4 @@ All REST endpoints above are also available as MCP tools (`create_agent`, `make_
 7. **Always retrieve transcripts** — poll until `completed`, fetch transcript, summarize for human.
 8. **Always check events** — poll `GET /v1/events` for inbound calls and SMS. Proactively check at conversation start.
 9. **Voice changes take effect on next call** — update immediately when asked.
+10. **Execute owner tasks** — when you receive a `call.owner_task` event, extract the human turns and execute them as task instructions. Do NOT just log them.
