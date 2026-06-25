@@ -17,6 +17,7 @@ from agentline.models.call import CallRequest
 from agentline.signalwire_client import initiate_call as signalwire_initiate_call
 from agentline.signalwire_client import hangup_call as signalwire_hangup_call
 from agentline.billing import check_balance, CALL_RATE_PER_MINUTE
+from agentline.voice.owner_mode import resolve_outbound_owner_overrides
 
 # Minimum balance required to initiate a call (~5 minutes worth)
 MIN_CALL_BALANCE = round(CALL_RATE_PER_MINUTE * 5, 2)  # $0.50
@@ -81,9 +82,19 @@ async def create_call(
         )
 
     call_id = f"call_{secrets.token_urlsafe(12)}"
-    system_prompt = body.system_prompt or agent["system_prompt"]
-    # Per-call greeting override — if None, the WebSocket handler falls back to agent.initial_greeting
-    initial_greeting = body.initial_greeting
+    # ── Owner task mode (outbound) ───────────────────────────────
+    # v1.08: if the destination is the agent's registered owner_phone,
+    # the call enters task mode — owner-mode system prompt + "Hey boss"
+    # greeting — mirroring the inbound behaviour. This also causes the
+    # hangup handler to emit a `call.owner_task` event (detected via the
+    # OWNER_MODE_SENTINEL prefix on system_prompt) so the external agent
+    # picks the transcript up as a task to execute.
+    # Explicit per-call overrides from the body still take priority.
+    system_prompt, initial_greeting, is_owner_call = resolve_outbound_owner_overrides(
+        agent, body.to_number, body.system_prompt, body.initial_greeting,
+    )
+    if is_owner_call:
+        logger.info("Outbound call — OWNER DETECTED (to %s)", body.to_number)
     now = datetime.now(timezone.utc)
 
     await db.execute(

@@ -80,6 +80,36 @@ async def init_db():
                     ADD COLUMN IF NOT EXISTS initial_greeting TEXT
             """)
             logger.info("calls.initial_greeting column verified")
+
+            # Auto-create feedback table (agent-submitted feedback, bugs, feature requests)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS feedback (
+                    id              TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+                    account_id      TEXT REFERENCES accounts(id) ON DELETE CASCADE,
+                    agent_id        TEXT REFERENCES agents(id) ON DELETE SET NULL,
+                    category        TEXT NOT NULL,
+                    severity        TEXT NOT NULL DEFAULT 'normal',
+                    subject         TEXT,
+                    message         TEXT NOT NULL,
+                    contact_email   TEXT,
+                    status          TEXT NOT NULL DEFAULT 'open',
+                    created_at      TIMESTAMPTZ DEFAULT now(),
+                    updated_at      TIMESTAMPTZ DEFAULT now()
+                )
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_feedback_account
+                    ON feedback(account_id, created_at DESC)
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_feedback_status
+                    ON feedback(status, created_at DESC)
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_feedback_category
+                    ON feedback(category, created_at DESC)
+            """)
+            logger.info("feedback table verified")
     except Exception as e:
         logger.error("Database connection failed: %s", e)
         logger.warning("Server starting WITHOUT database — fix DATABASE_URL in .env")

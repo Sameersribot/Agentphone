@@ -27,6 +27,12 @@ from agentline.config import settings
 from agentline.database import get_db_conn
 from agentline.voice.pipeline import run_pipeline
 from agentline.voice.voices import resolve_voice_chain, DEFAULT_VOICE_ID
+from agentline.voice.owner_mode import (
+    OWNER_MODE_SENTINEL,
+    OWNER_MODE_GREETING,
+    build_owner_prompt,
+    is_owner_number,
+)
 from agentline.billing import calculate_call_cost, debit_account
 from agentline.signalwire_client import _get_auth, _get_base_url
 
@@ -34,26 +40,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/signalwire", tags=["SignalWire Events"])
 
-# ── Owner mode prompt ─────────────────────────────────────────────
-# Prepended to the system prompt when the account owner calls their
-# own agent.  The LLM treats the caller as the boss giving tasks.
-OWNER_MODE_PROMPT = """\
-OWNER MODE — The person on this call is your OWNER (the account holder who controls you).
-
-CRITICAL RULES:
-1. This is NOT a regular caller. This is your boss giving you instructions.
-2. LISTEN carefully — they are telling you a TASK to perform.
-3. Keep responses extremely short: acknowledge, confirm, clarify if needed.
-4. Do NOT make small talk. Be direct and efficient.
-5. Summarize the task back to confirm you understood correctly.
-6. When you have the full task, say: "Got it, I'll get that done."
-"""
-
-
-def _build_owner_prompt(agent) -> str:
-    """Build system prompt for owner-mode calls."""
-    base = agent.get("system_prompt") or ""
-    return OWNER_MODE_PROMPT + "\n" + base
+# Owner-mode prompt + helpers live in agentline.voice.owner_mode so they
+# can be shared with the outbound call path (routers/calls.py) without a
+# router-to-router import. See that module for the full task-mode contract.
 
 def _xml(body: str) -> Response:
     return Response(content=body, media_type="application/xml")
@@ -400,7 +389,7 @@ async def signalwire_hangup(request: Request, call_id: str):
             transcript = _parse_transcript(call.get("transcript"))
 
             # Detect owner call by checking the system_prompt sentinel
-            is_owner_task = (call.get("system_prompt") or "").startswith("OWNER MODE")
+            is_owner_task = (call.get("system_prompt") or "").startswith(OWNER_MODE_SENTINEL)
 
             event_id = f"evt_{secrets.token_urlsafe(12)}"
             event_payload = {
@@ -485,12 +474,7 @@ async def signalwire_inbound_call(request: Request):
         agent = await db.fetchrow("SELECT * FROM agents WHERE id=$1", number["agent_id"])
 
         # ── Owner detection ──────────────────────────────────
-        is_owner_call = bool(
-            agent
-            and agent.get("owner_phone")
-            and from_number
-            and from_number.lstrip("+") == agent["owner_phone"].lstrip("+")
-        )
+        is_owner_call = is_owner_number(agent, from_number)
         if is_owner_call:
             logger.info("Inbound call — OWNER DETECTED (from %s)", from_number)
 
@@ -502,8 +486,8 @@ async def signalwire_inbound_call(request: Request):
                VALUES ($1,$2,$3,$4,$5,'inbound',$6,$7,$8,$9,'in-progress',now())""",
             call_id, number["account_id"], number["agent_id"], number["id"],
             call_sid, from_number, to_number,
-            _build_owner_prompt(agent) if is_owner_call else (agent["system_prompt"] if agent else ""),
-            "Hey boss, what would you like me to do?" if is_owner_call else (agent.get("initial_greeting") if agent else None),
+            build_owner_prompt(agent) if is_owner_call else (agent["system_prompt"] if agent else ""),
+            OWNER_MODE_GREETING if is_owner_call else (agent.get("initial_greeting") if agent else None),
         )
 
         # ── Push call.received event to event mailbox ──
@@ -627,7 +611,7 @@ async def signalwire_inbound_hangup(request: Request):
 
             # Push event to mailbox
             transcript = _parse_transcript(call.get("transcript"))
-            is_owner_task = (call.get("system_prompt") or "").startswith("OWNER MODE")
+            is_owner_task = (call.get("system_prompt") or "").startswith(OWNER_MODE_SENTINEL)
             event_id = f"evt_{secrets.token_urlsafe(12)}"
             if is_owner_task and call_status == "completed":
                 event_type = "call.owner_task"

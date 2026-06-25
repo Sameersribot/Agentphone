@@ -292,6 +292,38 @@ If no numbers are available for the requested area code, the API returns an erro
 
 ---
 
+## Feedback
+
+Send feedback, report bugs, request features, or flag difficulties to the AgentLine team.
+
+### Submit Feedback
+
+`POST /v1/feedback` with:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `category` | Yes | `bug`, `feature_request`, `difficulty`, or `feedback` |
+| `message` | Yes | Detailed description. For bugs, include expected vs. actual behavior and steps to reproduce. |
+| `subject` | No | Short summary title |
+| `severity` | No | `low`, `normal` (default), `high`, `critical` — mainly for bugs |
+| `agent_id` | No | Related AI agent ID, if the feedback is about a specific agent |
+| `contact_email` | No | Email for follow-up |
+
+```bash
+curl -X POST $AGENTLINE_URL/v1/feedback \
+  -H "Authorization: Bearer $AGENTLINE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"category": "bug", "subject": "Call hung up immediately", "message": "...", "severity": "high"}'
+```
+
+Returned `status` starts as `open` and moves through `acknowledged` → `in_progress` → `resolved`/`closed` as the team triages it.
+
+### Track Feedback
+
+- **List yours:** `GET /v1/feedback?category=bug&status=open`
+
+---
+
 ## MCP Server
 
 AgentLine exposes a full MCP (Model Context Protocol) server at `https://api.agentline.cloud/mcp` with 21+ tools. For Claude Desktop, Cursor, or any MCP-compatible client, connect directly via:
@@ -376,3 +408,4 @@ In this example, the task is: "Call the dentist office and reschedule my appoint
 8. **Always check events** — poll `GET /v1/events` for inbound calls and SMS. Proactively check at conversation start.
 9. **Voice changes take effect on next call** — update immediately when asked.
 10. **Execute owner tasks** — when you receive a `call.owner_task` event, extract the human turns and execute them as task instructions. Do NOT just log them.
+11. **Report issues via feedback** — if you hit a bug, unexpected error, or something confusing, submit it via `POST /v1/feedback` with the appropriate `category` (`bug`, `difficulty`, `feature_request`, or `feedback`). Include enough detail to reproduce. Don't silently swallow errors.

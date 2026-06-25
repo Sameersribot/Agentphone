@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from agentline.database import init_db, close_db
 from agentline.redis_client import init_redis, close_redis
-from agentline.routers import agents, numbers, messages, calls, usage, events, signalwire_events, billing_api, voice_settings
+from agentline.routers import agents, numbers, messages, calls, usage, events, signalwire_events, billing_api, voice_settings, feedback
 
 # Configure logging
 logging.basicConfig(
@@ -122,6 +122,7 @@ app.include_router(events.router)
 app.include_router(signalwire_events.router)
 app.include_router(billing_api.router)
 app.include_router(voice_settings.router)
+app.include_router(feedback.router)
 
 
 @app.get("/", tags=["Health"], operation_id="health_check")
@@ -348,6 +349,15 @@ _TOOL_ANNOTATIONS = {
     "reset_account_voice": mcp_types.ToolAnnotations(
         title="Reset Account Voice to Default",
         readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False,
+    ),
+    # Feedback
+    "submit_feedback": mcp_types.ToolAnnotations(
+        title="Submit Feedback / Report Issue",
+        readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False,
+    ),
+    "list_feedback": mcp_types.ToolAnnotations(
+        title="List Submitted Feedback",
+        readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False,
     ),
 }
 
