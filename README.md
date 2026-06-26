@@ -40,17 +40,42 @@ uvicorn agentline.main:app --reload
 
 ## API Endpoints
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET/POST` | `/v1/agents` | CRUD agents |
-| `GET/POST` | `/v1/numbers` | Provision/release phone numbers |
-| `GET/POST` | `/v1/messages` | Send/list SMS messages |
-| `GET/POST` | `/v1/calls` | Initiate/list voice calls |
-| `POST` | `/v1/calls/{id}/speak` | Send TTS response on active call |
-| `POST` | `/v1/calls/{id}/hangup` | Terminate an active call |
-| `GET` | `/v1/calls/{id}/listen` | Poll for caller speech (long-poll) |
-| `GET/POST` | `/v1/webhooks` | Configure event webhooks |
-| `GET` | `/v1/usage` | Usage statistics |
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/v1/auth/otp` | none | Email a one-time code (signup + login entry point) |
+| `POST` | `/v1/auth/verify` | none | Verify the code → auto-create account + `$2.50` bonus → mint API key |
+| `POST` | `/v1/auth/keys` | Bearer | Mint an additional API key |
+| `GET` | `/v1/auth/keys` | Bearer | List your API keys (prefix/created/revoked) |
+| `DELETE` | `/v1/auth/keys/{id}` | Bearer | Revoke an API key (not the one in use) |
+| `GET/POST` | `/v1/agents` | Bearer | CRUD agents |
+| `GET/POST` | `/v1/numbers` | Bearer | Provision/release phone numbers |
+| `GET/POST` | `/v1/messages` | Bearer | Send/list SMS messages |
+| `GET/POST` | `/v1/calls` | Bearer | Initiate/list voice calls |
+| `POST` | `/v1/calls/{id}/speak` | Bearer | Send TTS response on active call |
+| `POST` | `/v1/calls/{id}/hangup` | Bearer | Terminate an active call |
+| `GET` | `/v1/calls/{id}/listen` | Bearer | Poll for caller speech (long-poll) |
+| `GET/POST` | `/v1/webhooks` | Bearer | Configure event webhooks |
+| `GET` | `/v1/usage` | Bearer | Usage statistics |
+
+## Authentication
+
+Every authenticated request needs `Authorization: Bearer sk_live_...`.
+
+**No key yet? Get one with a single email OTP flow** (no web UI required):
+
+1. **Request a code** — `POST /v1/auth/otp` with `{"email": "you@example.com"}`
+2. **Verify the code** — `POST /v1/auth/verify` with `{"email": "you@example.com", "otp": "123456"}`
+   - New emails auto-create an account credited with a **$2.50 sign-up bonus**.
+   - Returns a freshly minted `api_key` (plaintext, **shown only once**).
+
+The same email always resolves to the same account, so an agent that signs up and a human who later signs in with that email land on the identical account. API keys are bcrypt-hashed at rest.
+
+**Manage keys** (any active key authenticates these):
+- Mint another: `POST /v1/auth/keys`
+- List: `GET /v1/auth/keys`
+- Revoke: `DELETE /v1/auth/keys/{key_id}` (cannot revoke the key in use)
+
+> **Note:** The OTP endpoints are plain REST, not MCP tools — the MCP transport itself requires a Bearer key to connect, so signup must happen over HTTP first.
 
 ## Number Provisioning
 

@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from agentline.database import init_db, close_db
 from agentline.redis_client import init_redis, close_redis
-from agentline.routers import agents, numbers, messages, calls, usage, events, signalwire_events, billing_api, voice_settings, feedback
+from agentline.routers import agents, numbers, messages, calls, usage, events, signalwire_events, billing_api, voice_settings, feedback, auth
 
 # Configure logging
 logging.basicConfig(
@@ -98,7 +98,7 @@ app = FastAPI(
         "Build AI phone agents, automated outbound calling systems, AI receptionists, "
         "and conversational voice AI assistants over real phone lines."
     ),
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
@@ -123,13 +123,14 @@ app.include_router(signalwire_events.router)
 app.include_router(billing_api.router)
 app.include_router(voice_settings.router)
 app.include_router(feedback.router)
+app.include_router(auth.router)
 
 
 @app.get("/", tags=["Health"], operation_id="health_check")
 async def root():
     return {
         "service": "AgentLine",
-        "version": "0.2.0",
+        "version": "0.3.0",
         "status": "operational",
         "mcp_endpoint": "/mcp",
     }
@@ -204,6 +205,13 @@ mcp = FastApiMCP(
     # Exclude internal webhooks, health/debug endpoints, and tools
     # not documented in the public skill (SKILL.md).
     exclude_operations=[
+        # ── Auth: signup/login require no Bearer key, so they can't be MCP tools ──
+        # (MCP transport itself needs an API key to connect). Keep as plain REST.
+        "auth_send_otp",
+        "auth_verify_otp",
+        "auth_create_api_key",
+        "auth_list_api_keys",
+        "auth_revoke_api_key",
         # ── Internal provider webhooks ──
         "signalwire_answer",
         "signalwire_stream",
@@ -241,7 +249,7 @@ mcp = FastApiMCP(
 # FastApiMCP only sets name + description on the underlying Server.
 # We patch in version, instructions, and website_url for full metadata.
 try:
-    mcp.server.version = "0.2.0"
+    mcp.server.version = "0.3.0"
     mcp.server.instructions = (
         "AgentLine gives AI agents real phone numbers and human-like voices. "
         "Start by creating an agent (create_agent), then buy a phone number "

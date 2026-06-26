@@ -1,6 +1,6 @@
 ---
 name: agentline
-description: Make phone calls, view received SMS, provision numbers, manage agents, and track billing through the AgentLine telephony API (REST or MCP). Use when the user asks to call someone, check transcripts, view text messages, manage phone agents, buy numbers, or check account balance. For MCP-native workflows, the server at api.agentline.cloud/mcp exposes 21+ tools as first-class agent tools.
+description: Make phone calls, view received SMS, provision numbers, manage agents, and track billing through the AgentLine telephony API (REST or MCP). Use when the user asks to call someone, check transcripts, view text messages, manage phone agents, buy numbers, or check account balance. If no API key is present, sign up / log in via the email OTP flow (POST /v1/auth/otp then /v1/auth/verify) — no web UI needed. For MCP-native workflows, the server at api.agentline.cloud/mcp exposes 21+ tools as first-class agent tools.
 metadata:
   openclaw:
     emoji: "📞"
@@ -19,7 +19,8 @@ Give your AI agent a real phone number and voice calls — no servers, no webhoo
 **Follow these steps IN ORDER when setting up AgentLine for the first time:**
 
 1. **Check for `AGENTLINE_API_KEY`** (starts with `sk_live_`) — this is required.
-   - **If you do NOT have this key**, stop and ask the human to sign up or log in at **https://agentline.cloud** to get their API key. Do NOT proceed without it.
+   - **If you already have it**, continue to step 2.
+   - **If you do NOT have it**, obtain one yourself via the **Self-Service Signup** flow below: ask the human for their email, `POST /v1/auth/otp`, ask them for the code they received, `POST /v1/auth/verify` → save the returned `api_key` as `AGENTLINE_API_KEY`. New accounts get a **$2.50 bonus**, so no top-up is needed to start. Do NOT ask the human to visit a website.
 
 2. **Check for `AGENTLINE_AGENT_ID`** (starts with `agt_`) — this is optional.
    - **If you already have one**, use it and skip to step 3.
@@ -60,6 +61,36 @@ Give your AI agent a real phone number and voice calls — no servers, no webhoo
 Every request: `Authorization: Bearer $AGENTLINE_API_KEY` + `Content-Type: application/json`
 
 Base URL: `https://api.agentline.cloud`
+
+---
+
+## Self-Service Signup (No API Key Yet)
+
+If `AGENTLINE_API_KEY` is missing, get one in **two plain REST calls** (no auth needed — these are **HTTP, not MCP**, since MCP itself needs a key to connect). You need the human's email and access to their inbox.
+
+```bash
+# 1. Ask the human for their email, then send a one-time code to it:
+curl -s -X POST $AGENTLINE_URL/v1/auth/otp \
+  -H "Content-Type: application/json" \
+  -d '{"email": "HUMAN_EMAIL"}'
+```
+```bash
+# 2. Ask the human for the code from the email, then verify it:
+curl -s -X POST $AGENTLINE_URL/v1/auth/verify \
+  -H "Content-Type: application/json" \
+  -d '{"email": "HUMAN_EMAIL", "otp": "CODE"}'
+```
+
+The `verify` response returns `api_key` (plaintext — **shown only once, save it immediately**), `account_id`, `balance`, and `is_new_account`. Set this key as `AGENTLINE_API_KEY` for everything else.
+
+- New emails auto-create an account with a **$2.50 sign-up bonus** — enough to start calling without a top-up.
+- Same email → same account: an agent that signs up and a human who later signs in with that email share one account and balance.
+- The code expires quickly and rate limits apply (3 OTP/email, 5 OTP/IP, 5 verify/email per 10 min). If the human didn't get the code, wait and retry — don't spam.
+
+**Manage keys** (Bearer-authenticated, once you have one):
+- Mint another: `POST /v1/auth/keys`
+- List: `GET /v1/auth/keys`
+- Revoke: `DELETE /v1/auth/keys/{key_id}` (cannot revoke the key currently in use)
 
 ---
 
