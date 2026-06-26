@@ -159,12 +159,14 @@ async def verify_and_issue_key(body: VerifyRequest, db=Depends(get_db)):
     if account is None:
         # New account — create with zero balance, then credit the sign-up bonus
         # via the billing ledger so the credit is fully auditable.
-        row = await db.fetchrow(
-            "INSERT INTO accounts (human_email, supabase_user_id, balance) "
-            "VALUES ($1, $2, 0.0000) RETURNING id",
-            email, supabase_user_id,
+        # ID follows the established 'acct_<token>' convention used by every
+        # existing account, rather than the schema's raw-UUID default.
+        account_id = f"acct_{secrets.token_urlsafe(12)}"
+        await db.execute(
+            "INSERT INTO accounts (id, human_email, supabase_user_id, balance) "
+            "VALUES ($1, $2, $3, 0.0000)",
+            account_id, email, supabase_user_id,
         )
-        account_id = row["id"]
         is_new_account = True
         balance = await credit_account(
             db, account_id, SIGNUP_BONUS,
