@@ -3,6 +3,7 @@ AgentLine — Agents Router
 Full CRUD for agent configuration.
 """
 
+import logging
 import secrets
 from datetime import datetime, timezone
 
@@ -11,6 +12,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from agentline.auth_middleware import get_current_account
 from agentline.database import get_db
 from agentline.models.agent import AgentCreate, AgentUpdate, AgentOut
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/agents", tags=["Agents"])
 
@@ -225,6 +228,13 @@ async def delete_agent(
         "UPDATE phone_numbers SET agent_id = NULL WHERE agent_id = $1",
         agent_id,
     )
+
+    # Remove this agent's webhook (scoped to this agent only). Done in app code
+    # so agent deletion never hits a FK violation. Non-fatal if it fails.
+    try:
+        await db.execute("DELETE FROM webhooks WHERE agent_id = $1", agent_id)
+    except Exception as e:
+        logger.warning("Non-fatal: could not delete webhook for agent %s: %s", agent_id[:12], e)
 
     await db.execute("DELETE FROM agents WHERE id = $1", agent_id)
 
