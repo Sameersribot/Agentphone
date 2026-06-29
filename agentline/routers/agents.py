@@ -44,8 +44,9 @@ async def create_agent(
         await db.execute(
             """INSERT INTO agents
                (id, account_id, name, system_prompt, initial_greeting,
-                voice_id, model_tier, transfer_number, voicemail_message, owner_phone, created_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)""",
+                voice_id, model_tier, transfer_number, voicemail_message,
+                voice_mode, owner_phone, created_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)""",
             agent_id,
             account["id"],
             body.name,
@@ -55,6 +56,7 @@ async def create_agent(
             "balanced",
             body.transfer_number,
             body.voicemail_message,
+            body.voice_mode,
             body.owner_phone,
             now,
         )
@@ -64,8 +66,9 @@ async def create_agent(
             await db.execute(
                 """INSERT INTO agents
                    (id, account_id, name, system_prompt, initial_greeting,
-                    voice_id, model_tier, transfer_number, voicemail_message, created_at)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)""",
+                    voice_id, model_tier, transfer_number, voicemail_message,
+                    voice_mode, created_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)""",
                 agent_id,
                 account["id"],
                 body.name,
@@ -75,6 +78,7 @@ async def create_agent(
                 "balanced",
                 body.transfer_number,
                 body.voicemail_message,
+                body.voice_mode,
                 now,
             )
         else:
@@ -90,6 +94,7 @@ async def create_agent(
         transfer_number=body.transfer_number,
         voicemail_message=body.voicemail_message,
         owner_phone=body.owner_phone,
+        voice_mode=body.voice_mode,
         created_at=now,
     )
 

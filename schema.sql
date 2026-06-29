@@ -101,7 +101,7 @@ CREATE TABLE conversations (
 CREATE TABLE webhooks (
     id         TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
     account_id TEXT REFERENCES accounts(id) ON DELETE CASCADE,
-    agent_id   TEXT REFERENCES agents(id),
+    agent_id   TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,  -- strictly per-agent (no account-wide)
     url        TEXT NOT NULL,
     secret     TEXT NOT NULL,
     created_at TIMESTAMPTZ DEFAULT now()
@@ -172,7 +172,8 @@ CREATE INDEX idx_messages_account ON messages(account_id, created_at DESC);
 CREATE INDEX idx_messages_conversation ON messages(conversation_id, created_at DESC);
 CREATE INDEX idx_conversations_number_contact ON conversations(number_id, contact_number);
 CREATE INDEX idx_webhooks_agent ON webhooks(agent_id);
-CREATE INDEX idx_webhooks_account ON webhooks(account_id) WHERE agent_id IS NULL;
+-- One webhook per agent (no account-wide).
+CREATE UNIQUE INDEX idx_webhooks_one_per_agent ON webhooks(account_id, agent_id);
 CREATE INDEX idx_accounts_supabase ON accounts(supabase_user_id) WHERE supabase_user_id IS NOT NULL;
 CREATE INDEX idx_event_mailbox_account ON event_mailbox(account_id, created_at ASC);
 CREATE INDEX idx_event_mailbox_agent ON event_mailbox(account_id, agent_id, created_at ASC);

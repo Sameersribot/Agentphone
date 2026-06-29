@@ -2,6 +2,7 @@
 AgentLine — Agent Pydantic schemas
 """
 
+from typing import Literal
 from pydantic import BaseModel, Field
 from datetime import datetime
 
@@ -15,6 +16,7 @@ class AgentCreate(BaseModel):
     transfer_number: str | None = Field(default=None, description="Phone number in E.164 format to transfer calls to (e.g. a human operator fallback)")
     voicemail_message: str | None = Field(default=None, description="Message the AI agent leaves if the call goes to voicemail")
     owner_phone: str | None = Field(default=None, description="Owner's phone number in E.164 format (e.g. '+12125551234'). Calls from this number enter task mode — the agent treats speech as executable instructions.")
+    voice_mode: Literal["hosted", "webhook"] = Field(default="hosted", description="Where the agent's 'brain' runs. 'hosted' = AgentLine's LLM (Deepgram STT → LLM → Cartesia TTS). 'webhook' = the agent's configured webhook receives each caller utterance and returns what the agent says (2-way), for both inbound and outbound. Requires a webhook URL to be configured.")
 
 
 class AgentUpdate(BaseModel):
@@ -25,6 +27,7 @@ class AgentUpdate(BaseModel):
     transfer_number: str | None = Field(default=None, description="Updated transfer phone number in E.164 format")
     voicemail_message: str | None = Field(default=None, description="Updated voicemail message")
     owner_phone: str | None = Field(default=None, description="Updated owner phone number in E.164 format for task mode")
+    voice_mode: Literal["hosted", "webhook"] | None = Field(default=None, description="Switch the agent's brain: 'hosted' (LLM) or 'webhook' (the agent's webhook becomes the 2-way conversational brain). Webhook mode requires a configured webhook URL.")
 
 
 class AgentOut(BaseModel):
@@ -37,4 +40,5 @@ class AgentOut(BaseModel):
     transfer_number: str | None = Field(default=None, description="Phone number for call transfers")
     voicemail_message: str | None = Field(default=None, description="Message left on voicemail")
     owner_phone: str | None = Field(default=None, description="Owner's phone number for task mode")
+    voice_mode: str = Field(default="hosted", description="Agent brain: 'hosted' (LLM) or 'webhook' (agent webhook is 2-way brain)")
     created_at: datetime = Field(description="When the agent was created")

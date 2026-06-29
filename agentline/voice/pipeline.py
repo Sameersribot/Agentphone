@@ -34,6 +34,7 @@ from agentline.voice.stt import create_deepgram_connection, get_stt_options
 from agentline.voice.llm import llm_response_stream
 from agentline.voice.tts import tts_cartesia, tts_cartesia_stream
 from agentline.voice.voices import resolve_voice_id, DEFAULT_VOICE_ID
+from agentline.voice.webhook_brain import webhook_response_stream
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +182,10 @@ async def run_pipeline(
     provider: str = "signalwire",
     call_direction: str = "inbound",
     voicemail_message: str | None = None,
+    voice_mode: str = "hosted",
+    webhook_config: dict | None = None,
+    agent_id: str | None = None,
+    account_id: str | None = None,
 ):
     """
     Main voice pipeline coroutine. One instance per active call.
@@ -224,7 +229,9 @@ async def run_pipeline(
 
     # Augment system prompt for outbound calls so the LLM knows
     # to listen first and handle voicemail / IVR / screening.
-    if call_direction == "outbound":
+    # (Webhook mode skips this — the webhook brain receives `direction`
+    # in its payload and decides how to handle outbound itself.)
+    if call_direction == "outbound" and voice_mode == "hosted":
         outbound_prompt = OUTBOUND_CONTEXT
         if initial_greeting:
             outbound_prompt += (
@@ -252,9 +259,29 @@ async def run_pipeline(
         into the queue when generation finishes (or on error).
         """
         try:
-            async for sentence in llm_response_stream(
-                system_prompt, conversation_history, model_tier
-            ):
+            # ── Choose the brain ───────────────────────────────────
+            # Webhook mode: the agent's configured webhook is the conversational
+            # brain (2-way). Hosted mode (or webhook mode without a configured
+            # URL): use the hosted LLM.
+            if voice_mode == "webhook" and webhook_config:
+                brain = webhook_response_stream(
+                    webhook_url=webhook_config["url"],
+                    webhook_secret=webhook_config["secret"],
+                    call_id=call_id,
+                    agent_id=agent_id,
+                    account_id=account_id,
+                    direction=call_direction,
+                    user_message=utterance,
+                    conversation_history=conversation_history,
+                    system_prompt=system_prompt,
+                    voice_id=voice_id,
+                )
+            else:
+                brain = llm_response_stream(
+                    system_prompt, conversation_history, model_tier
+                )
+
+            async for sentence in brain:
                 # ── Voicemail sentinel interception ──────────────────
                 # If the LLM outputs [VOICEMAIL_DETECTED], it means it
                 # heard a voicemail greeting.  Stop generation immediately

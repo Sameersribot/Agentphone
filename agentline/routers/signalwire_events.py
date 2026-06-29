@@ -34,6 +34,7 @@ from agentline.voice.owner_mode import (
     is_owner_number,
 )
 from agentline.billing import calculate_call_cost, debit_account
+from agentline.event_bus import publish_event
 from agentline.signalwire_client import _get_auth, _get_base_url
 
 logger = logging.getLogger(__name__)
@@ -124,6 +125,10 @@ async def signalwire_stream(websocket: WebSocket, call_id: str):
     model_tier = "balanced"
     call_direction = "inbound"          # overridden from call record below
     voicemail_message_text = None       # from agent config
+    voice_mode = "hosted"               # "hosted" (LLM) or "webhook" (agent's webhook is the brain)
+    webhook_config: dict | None = None  # {url, secret} when voice_mode == "webhook"
+    pipeline_agent_id = None
+    pipeline_account_id = None
 
     try:
         async with get_db_conn() as db:
@@ -141,6 +146,7 @@ async def signalwire_stream(websocket: WebSocket, call_id: str):
                     system_prompt = agent.get("system_prompt") or system_prompt
                     initial_greeting = agent.get("initial_greeting") or initial_greeting
                     voicemail_message_text = agent.get("voicemail_message")
+                    voice_mode = agent.get("voice_mode") or "hosted"
 
                 # Call direction (inbound / outbound)
                 call_direction = call.get("direction", "inbound")
@@ -159,6 +165,25 @@ async def signalwire_stream(websocket: WebSocket, call_id: str):
 
                 if call.get("initial_greeting"):
                     initial_greeting = call["initial_greeting"]
+
+                pipeline_agent_id = call.get("agent_id")
+                pipeline_account_id = call.get("account_id")
+
+                # Webhook voice mode: load the agent's webhook to use as the brain.
+                # If voice_mode is webhook but no webhook is configured, fall back to hosted.
+                if voice_mode == "webhook":
+                    wh = await db.fetchrow(
+                        "SELECT url, secret FROM webhooks WHERE account_id=$1 AND agent_id=$2",
+                        call["account_id"], call["agent_id"],
+                    )
+                    if wh:
+                        webhook_config = {"url": wh["url"], "secret": wh["secret"]}
+                    else:
+                        logger.warning(
+                            "Call %s — voice_mode=webhook but no webhook configured; "
+                            "falling back to hosted LLM", call_id,
+                        )
+                        voice_mode = "hosted"
     except Exception as e:
         logger.warning("Failed to load agent context for call %s: %s", call_id, e)
 
@@ -173,6 +198,10 @@ async def signalwire_stream(websocket: WebSocket, call_id: str):
             provider="signalwire",
             call_direction=call_direction,
             voicemail_message=voicemail_message_text,
+            voice_mode=voice_mode,
+            webhook_config=webhook_config,
+            agent_id=pipeline_agent_id,
+            account_id=pipeline_account_id,
         )
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected for call %s", call_id)
@@ -273,50 +302,22 @@ async def signalwire_sms_callback(request: Request):
             from_number, to_number, text, media_url or None,
         )
 
-        # ── Push sms.received event to event mailbox ──
-        event_id = f"evt_{secrets.token_urlsafe(12)}"
-        event_payload = {
-            "message_id": msg_id,
-            "conversation_id": conv_id,
-            "from_number": from_number,
-            "to_number": to_number,
-            "body": text,
-            "media_url": media_url or None,
-        }
-
-        try:
-            await db.execute(
-                """INSERT INTO event_mailbox
-                   (event_id, account_id, agent_id, event_type, payload)
-                   VALUES ($1, $2, $3, 'sms.received', $4)""",
-                event_id,
-                number["account_id"],
-                number["agent_id"],
-                json.dumps(event_payload),
-            )
-            logger.info(
-                "Inbound SMS %s — pushed sms.received event (from %s)",
-                msg_id, from_number,
-            )
-        except Exception as e:
-            logger.error("Failed to push sms.received event for %s: %s", msg_id, e)
-
-    # ── Dispatch to customer webhook (fire-and-forget) ──
-    try:
-        from agentline.webhook_dispatcher import dispatch_webhook
-        await dispatch_webhook(number["account_id"], number["agent_id"], {
-            "event": "sms.received",
-            "message_id": msg_id,
-            "conversation_id": conv_id,
-            "agent_id": number["agent_id"],
-            "number_id": number["id"],
-            "from_number": from_number,
-            "to_number": to_number,
-            "body": text,
-            "media_url": media_url or None,
-        })
-    except Exception as e:
-        logger.warning("Webhook dispatch failed for inbound SMS %s: %s", msg_id, e)
+        # ── Publish sms.received (mailbox + webhook) via the central event bus ──
+        await publish_event(
+            account_id=number["account_id"],
+            agent_id=number["agent_id"],
+            event_type="sms.received",
+            payload={
+                "message_id": msg_id,
+                "conversation_id": conv_id,
+                "agent_id": number["agent_id"],
+                "number_id": number["id"],
+                "from_number": from_number,
+                "to_number": to_number,
+                "body": text,
+                "media_url": media_url or None,
+            },
+        )
 
     return _xml("<Response/>")
 
@@ -385,13 +386,12 @@ async def signalwire_hangup(request: Request, call_id: str):
                         "Call %s — billing failed (insufficient balance): %s", call_id, e
                     )
 
-            # ── Push call.completed event with transcript to event mailbox ──
+            # ── Build call.completed/failed event payload with transcript ──
             transcript = _parse_transcript(call.get("transcript"))
 
             # Detect owner call by checking the system_prompt sentinel
             is_owner_task = (call.get("system_prompt") or "").startswith(OWNER_MODE_SENTINEL)
 
-            event_id = f"evt_{secrets.token_urlsafe(12)}"
             event_payload = {
                 "call_id": call_id,
                 "status": call_status,
@@ -408,23 +408,13 @@ async def signalwire_hangup(request: Request, call_id: str):
             else:
                 event_type = "call.completed" if call_status == "completed" else f"call.{call_status}"
 
-            try:
-                await db.execute(
-                    """INSERT INTO event_mailbox
-                       (event_id, account_id, agent_id, event_type, payload)
-                       VALUES ($1, $2, $3, $4, $5)""",
-                    event_id,
-                    call.get("account_id"),
-                    call.get("agent_id"),
-                    event_type,
-                    json.dumps(event_payload),
-                )
-                logger.info(
-                    "Call %s — pushed %s event (transcript: %d turns)",
-                    call_id, event_type, len(transcript),
-                )
-            except Exception as e:
-                logger.error("Failed to push event for call %s: %s", call_id, e)
+            # ── Publish event (mailbox + webhook) via the central event bus ──
+            await publish_event(
+                account_id=call["account_id"],
+                agent_id=call.get("agent_id"),
+                event_type=event_type,
+                payload=event_payload,
+            )
 
     return _xml("<Response/>")
 
@@ -490,35 +480,22 @@ async def signalwire_inbound_call(request: Request):
             OWNER_MODE_GREETING if is_owner_call else (agent.get("initial_greeting") if agent else None),
         )
 
-        # ── Push call.received event to event mailbox ──
+        # ── Publish call.received (mailbox + webhook) via the central event bus ──
         # This is how the real agent (Claude/Hermes) learns about inbound calls
-        call_received_payload = {
-            "call_id": call_id,
-            "agent_id": number["agent_id"],
-            "number": to_number,
-            "from": from_number,
-            "direction": "inbound",
-            "is_owner_call": is_owner_call,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-
-        event_id = f"evt_{secrets.token_urlsafe(12)}"
-        try:
-            await db.execute(
-                """INSERT INTO event_mailbox
-                   (event_id, account_id, agent_id, event_type, payload)
-                   VALUES ($1, $2, $3, 'call.received', $4)""",
-                event_id,
-                number["account_id"],
-                number["agent_id"],
-                json.dumps(call_received_payload),
-            )
-            logger.info(
-                "Inbound call %s — pushed call.received event (from %s)",
-                call_id, from_number,
-            )
-        except Exception as e:
-            logger.error("Failed to push call.received event for %s: %s", call_id, e)
+        await publish_event(
+            account_id=number["account_id"],
+            agent_id=number["agent_id"],
+            event_type="call.received",
+            payload={
+                "call_id": call_id,
+                "agent_id": number["agent_id"],
+                "number": to_number,
+                "from": from_number,
+                "direction": "inbound",
+                "is_owner_call": is_owner_call,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
 
     # Set StatusCallback on the live call so we get billed when it ends (fire-and-forget)
     # MUST NOT block — SignalWire is waiting for our XML response.
@@ -608,33 +585,28 @@ async def signalwire_inbound_hangup(request: Request):
                     logger.warning(
                         "Inbound call %s — billing failed: %s", call_id, e
                     )
-
-            # Push event to mailbox
+            # ── Publish event (mailbox + webhook) via the central event bus ──
             transcript = _parse_transcript(call.get("transcript"))
             is_owner_task = (call.get("system_prompt") or "").startswith(OWNER_MODE_SENTINEL)
-            event_id = f"evt_{secrets.token_urlsafe(12)}"
             if is_owner_task and call_status == "completed":
                 event_type = "call.owner_task"
             else:
                 event_type = "call.completed" if call_status == "completed" else f"call.{call_status}"
-            try:
-                await db.execute(
-                    """INSERT INTO event_mailbox
-                       (event_id, account_id, agent_id, event_type, payload)
-                       VALUES ($1, $2, $3, $4, $5)""",
-                    event_id, call.get("account_id"), call.get("agent_id"),
-                    event_type, json.dumps({
-                        "call_id": call_id,
-                        "status": call_status,
-                        "direction": "inbound",
-                        "from_number": call.get("from_number", ""),
-                        "to_number": call.get("to_number", ""),
-                        "duration_seconds": duration_secs,
-                        "transcript": transcript,
-                        "is_owner_task": is_owner_task,
-                    }),
-                )
-            except Exception as e:
-                logger.error("Failed to push event for inbound call %s: %s", call_id, e)
+
+            await publish_event(
+                account_id=call["account_id"],
+                agent_id=call.get("agent_id"),
+                event_type=event_type,
+                payload={
+                    "call_id": call_id,
+                    "status": call_status,
+                    "direction": "inbound",
+                    "from_number": call.get("from_number", ""),
+                    "to_number": call.get("to_number", ""),
+                    "duration_seconds": duration_secs,
+                    "transcript": transcript,
+                    "is_owner_task": is_owner_task,
+                },
+            )
 
     return _xml("<Response/>")

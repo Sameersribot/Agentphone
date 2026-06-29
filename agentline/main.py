@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from agentline.database import init_db, close_db
 from agentline.redis_client import init_redis, close_redis
-from agentline.routers import agents, numbers, messages, calls, usage, events, signalwire_events, billing_api, voice_settings, feedback, auth
+from agentline.routers import agents, numbers, messages, calls, usage, events, signalwire_events, billing_api, voice_settings, feedback, auth, webhooks
 
 # Configure logging
 logging.basicConfig(
@@ -124,6 +124,7 @@ app.include_router(billing_api.router)
 app.include_router(voice_settings.router)
 app.include_router(feedback.router)
 app.include_router(auth.router)
+app.include_router(webhooks.router)
 
 
 @app.get("/", tags=["Health"], operation_id="health_check")
@@ -366,6 +367,23 @@ _TOOL_ANNOTATIONS = {
     "list_feedback": mcp_types.ToolAnnotations(
         title="List Submitted Feedback",
         readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False,
+    ),
+    # Webhooks
+    "get_webhook": mcp_types.ToolAnnotations(
+        title="Get Webhook Configuration",
+        readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False,
+    ),
+    "set_webhook": mcp_types.ToolAnnotations(
+        title="Configure Event Webhook",
+        readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True,
+    ),
+    "delete_webhook": mcp_types.ToolAnnotations(
+        title="Remove Event Webhook",
+        readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False,
+    ),
+    "test_webhook": mcp_types.ToolAnnotations(
+        title="Send Test Event to Webhook",
+        readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False,
     ),
 }
 

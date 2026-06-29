@@ -110,6 +110,13 @@ async def init_db():
                     ON feedback(category, created_at DESC)
             """)
             logger.info("feedback table verified")
+
+            # One webhook per agent (no account-wide). agent_id is NOT NULL.
+            await conn.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_webhooks_one_per_agent
+                    ON webhooks(account_id, agent_id)
+            """)
+            logger.info("webhooks per-agent index verified")
     except Exception as e:
         logger.error("Database connection failed: %s", e)
         logger.warning("Server starting WITHOUT database — fix DATABASE_URL in .env")
