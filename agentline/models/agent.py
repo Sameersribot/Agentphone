@@ -2,12 +2,14 @@
 AgentLine — Agent Pydantic schemas
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from datetime import datetime
 
 
 
 class AgentCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(description="Display name for the AI voice agent")
     system_prompt: str | None = Field(default=None, description="Default instructions for the agent's personality and behavior on ALL calls (inbound and outbound). Can be overridden per-call via POST /v1/calls.")
     initial_greeting: str | None = Field(default=None, description="Default opening line spoken on ALL calls (inbound and outbound), e.g. 'Hello, how can I help you today?'. Can be overridden per-call via POST /v1/calls.")
@@ -18,6 +20,8 @@ class AgentCreate(BaseModel):
 
 
 class AgentUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str | None = Field(default=None, description="New display name for the AI voice agent")
     system_prompt: str | None = Field(default=None, description="Updated default instructions for ALL future calls (does not affect calls already in progress)")
     initial_greeting: str | None = Field(default=None, description="Updated default greeting for ALL future calls (inbound and outbound)")
