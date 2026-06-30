@@ -33,24 +33,8 @@ async def init_db():
             await conn.fetchval("SELECT 1")
         logger.info("Database connected successfully")
 
-        # Auto-create call_responses table (required for /speak → wait loop relay)
+        # Auto-create core tables (billing, accounts, etc.)
         async with _pool.acquire() as conn:
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS call_responses (
-                    id SERIAL PRIMARY KEY,
-                    call_id TEXT REFERENCES calls(id) ON DELETE CASCADE,
-                    response_text TEXT NOT NULL,
-                    spoken BOOLEAN DEFAULT false,
-                    created_at TIMESTAMPTZ DEFAULT now()
-                )
-            """)
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_call_responses_pending
-                ON call_responses (call_id, spoken)
-                WHERE spoken = false
-            """)
-            logger.info("call_responses table verified")
-
             # Auto-create billing infrastructure
             await conn.execute("""
                 ALTER TABLE accounts

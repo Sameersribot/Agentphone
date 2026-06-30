@@ -57,7 +57,7 @@ async def verify_and_provision(email: str, token_hash: str):
             # 4. Create agent
             agent_id = f"agt_{secrets.token_urlsafe(12)}"
             await conn.execute(
-                "INSERT INTO agents (id, account_id, name, voice_mode) VALUES ($1, $2, $3, 'hosted')",
+                "INSERT INTO agents (id, account_id, name) VALUES ($1, $2, $3)",
                 agent_id, account_id, "My Agent"
             )
             

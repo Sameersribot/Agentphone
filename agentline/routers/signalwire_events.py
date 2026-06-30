@@ -125,10 +125,6 @@ async def signalwire_stream(websocket: WebSocket, call_id: str):
     model_tier = "balanced"
     call_direction = "inbound"          # overridden from call record below
     voicemail_message_text = None       # from agent config
-    voice_mode = "hosted"               # "hosted" (LLM) or "webhook" (agent's webhook is the brain)
-    webhook_config: dict | None = None  # {url, secret} when voice_mode == "webhook"
-    pipeline_agent_id = None
-    pipeline_account_id = None
 
     try:
         async with get_db_conn() as db:
@@ -146,7 +142,6 @@ async def signalwire_stream(websocket: WebSocket, call_id: str):
                     system_prompt = agent.get("system_prompt") or system_prompt
                     initial_greeting = agent.get("initial_greeting") or initial_greeting
                     voicemail_message_text = agent.get("voicemail_message")
-                    voice_mode = agent.get("voice_mode") or "hosted"
 
                 # Call direction (inbound / outbound)
                 call_direction = call.get("direction", "inbound")
@@ -165,25 +160,6 @@ async def signalwire_stream(websocket: WebSocket, call_id: str):
 
                 if call.get("initial_greeting"):
                     initial_greeting = call["initial_greeting"]
-
-                pipeline_agent_id = call.get("agent_id")
-                pipeline_account_id = call.get("account_id")
-
-                # Webhook voice mode: load the agent's webhook to use as the brain.
-                # If voice_mode is webhook but no webhook is configured, fall back to hosted.
-                if voice_mode == "webhook":
-                    wh = await db.fetchrow(
-                        "SELECT url, secret FROM webhooks WHERE account_id=$1 AND agent_id=$2",
-                        call["account_id"], call["agent_id"],
-                    )
-                    if wh:
-                        webhook_config = {"url": wh["url"], "secret": wh["secret"]}
-                    else:
-                        logger.warning(
-                            "Call %s — voice_mode=webhook but no webhook configured; "
-                            "falling back to hosted LLM", call_id,
-                        )
-                        voice_mode = "hosted"
     except Exception as e:
         logger.warning("Failed to load agent context for call %s: %s", call_id, e)
 
@@ -198,10 +174,6 @@ async def signalwire_stream(websocket: WebSocket, call_id: str):
             provider="signalwire",
             call_direction=call_direction,
             voicemail_message=voicemail_message_text,
-            voice_mode=voice_mode,
-            webhook_config=webhook_config,
-            agent_id=pipeline_agent_id,
-            account_id=pipeline_account_id,
         )
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected for call %s", call_id)

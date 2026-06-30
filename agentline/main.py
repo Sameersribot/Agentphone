@@ -227,9 +227,6 @@ mcp = FastApiMCP(
         # ── SMS: sending is not enabled ──
         "send_sms",
         "list_conversations",
-        # ── Relay-mode call tools (hosted mode only) ──
-        "speak_on_call",
-        "listen_to_call",
         # ── Billing: only balance + expenditure exposed ──
         "get_usage_stats",
         "get_usage_balance",

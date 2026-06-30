@@ -25,7 +25,6 @@ CREATE TABLE agents (
     id               TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
     account_id       TEXT REFERENCES accounts(id) ON DELETE CASCADE,
     name             TEXT NOT NULL,
-    voice_mode       TEXT DEFAULT 'hosted',
     system_prompt    TEXT,
     initial_greeting TEXT,
     voice_id         TEXT,          -- Cartesia UUID, preset name, or NULL (resolves to system default)
