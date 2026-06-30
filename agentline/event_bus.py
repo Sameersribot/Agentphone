@@ -27,6 +27,7 @@ Usage:
 import json
 import logging
 import secrets
+from datetime import datetime, timezone
 
 from agentline.database import get_db_conn
 from agentline.webhook_dispatcher import dispatch_webhook
@@ -72,7 +73,25 @@ async def publish_event(
         logger.error("publish_event[%s]: mailbox insert failed: %s", event_type, e)
 
     # 2. Fire to the configured webhook (signed, best-effort)
+    # Webhook envelope exposes the event type under BOTH `event_type` (the
+    # canonical name used by the Events Mailbox and most webhook consumers,
+    # e.g. Hermes/Stripe-style filters) and `event` (legacy alias). Envelope
+    # keys are placed AFTER **payload so a payload key can never shadow them.
+    # event_id/agent_id/account_id are included so receivers can correlate and
+    # dedupe, matching the Events Mailbox row shape.
     try:
-        await dispatch_webhook(account_id, agent_id, {"event": event_type, **payload})
+        await dispatch_webhook(
+            account_id,
+            agent_id,
+            {
+                **payload,
+                "event_id": event_id,
+                "agent_id": agent_id,
+                "account_id": account_id,
+                "event_type": event_type,
+                "event": event_type,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
     except Exception as e:
         logger.warning("publish_event[%s]: webhook dispatch failed: %s", event_type, e)

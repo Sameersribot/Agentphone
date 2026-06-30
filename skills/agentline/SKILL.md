@@ -231,6 +231,52 @@ Each event contains: `event_id`, `agent_id`, `event_type`, and a `payload` with 
 
 ---
 
+## Event Webhooks (Push Delivery)
+
+As an **alternative to polling** the Events Mailbox, you can configure a webhook URL. Once set, **ALL** of that agent's events are delivered to that URL as signed JSON POSTs — no polling needed.
+
+> ⚠️ **There is NO "webhook mode" to enable or toggle.** It is just a URL. Setting a URL turns delivery ON; deleting the URL turns it OFF. That is the entire mechanism. Events are always also written to the Events Mailbox, so you can use both.
+
+**Works for ANY agent — old or new.** There is no restriction based on account or agent age. Every agent (and the account it belongs to) can have exactly one webhook URL.
+
+### Configure (set or replace) a webhook
+
+`POST /v1/webhooks` with:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `agent_id` | Yes | The agent whose events this webhook receives. Works for any existing agent. |
+| `url` | Yes | HTTPS URL that will receive signed JSON POSTs. |
+| `secret` | No | HMAC signing secret. Auto-generated if omitted. **Returned in full only this once** — save it. |
+
+```bash
+curl -X POST $AGENTLINE_URL/v1/webhooks \
+  -H "Authorization: Bearer $AGENTLINE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"agent_id": "$AGENTLINE_AGENT_ID", "url": "https://your-server.example.com/agentline"}'
+```
+
+Each agent has at most one webhook — POSTing again replaces the previous URL/secret.
+
+### What gets delivered
+
+Every event for that agent (`call.received`, `call.completed`, `call.owner_task`, `sms.received`, `webhook.test`, and all future types) is POSTed to the URL with these headers:
+
+- `X-AgentLine-Signature`: HMAC-SHA256 hex of the raw body, keyed by the webhook `secret`
+- `X-AgentLine-Event`: the event type (e.g. `sms.received`)
+
+The body is `{"event": "<type>", ...event payload...}`. **Verify the `X-AgentLine-Signature` header** using the secret to confirm authenticity.
+
+### Other webhook endpoints
+
+- **List all / one:** `GET /v1/webhooks` or `GET /v1/webhooks?agent_id=agt_xxx` (secret is masked)
+- **Delete (stop delivery):** `DELETE /v1/webhooks?agent_id=agt_xxx`
+- **Send a test event:** `POST /v1/webhooks/test?agent_id=agt_xxx` — fires a signed `webhook.test` through the same pipeline real events use
+
+> **If a user says an "old" account/agent can't have a webhook, that is incorrect.** There is no such limitation — `POST /v1/webhooks` works for every agent that belongs to the authenticated account.
+
+---
+
 ## List Calls
 
 `GET /v1/calls?limit=20` or `GET /v1/calls?status=completed&limit=10`

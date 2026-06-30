@@ -36,7 +36,7 @@ async def dispatch_webhook(
     HMAC-SHA256 using the webhook's secret, and POSTs it with headers:
 
       - X-AgentLine-Signature: <hex hmac of the raw body>
-      - X-AgentLine-Event:      <payload["event"]>
+      - X-AgentLine-Event:      <payload["event_type"]> (canonical; falls back to payload["event"])
 
     No-op when no webhook is configured for the agent (or when agent_id is
     None). Failures are logged, never raised, so callers (provider callback
@@ -73,13 +73,13 @@ async def dispatch_webhook(
                 headers={
                     "Content-Type": "application/json",
                     "X-AgentLine-Signature": signature,
-                    "X-AgentLine-Event": payload.get("event", "unknown"),
+                    "X-AgentLine-Event": payload.get("event_type", payload.get("event", "unknown")),
                 },
             )
 
         logger.info(
-            "Webhook delivered to %s (webhook=%s, agent=%s, event=%s, status=%s)",
-            row["url"], row["id"][:12], agent_id[:12], payload.get("event"), resp.status_code,
+            "Webhook delivered to %s (webhook=%s, agent=%s, event_type=%s, status=%s)",
+            row["url"], row["id"][:12], agent_id[:12], payload.get("event_type", payload.get("event")), resp.status_code,
         )
     except Exception as e:
         logger.warning("Webhook delivery failed for agent %s: %s", agent_id[:12], e)
